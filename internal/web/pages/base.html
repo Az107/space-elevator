@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ if .Title }}{{ .Title }}{{ else }}space-elevator{{ end }}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/static/js/htmx.min.js"></script>
+  <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+{{ if .Authed }}
+<header class="topbar">
+  <a href="/apps" class="brand">space-elevator</a>
+  <nav>
+    <a href="/apps">Apps</a>
+    <a href="/apps/new">Deploy</a>
+    <a href="/settings">Settings</a>
+    <form action="/logout" method="post" class="inline">
+      <button class="link">Logout</button>
+    </form>
+  </nav>
+</header>
+{{ end }}
+<main>
+{{ if .Error }}<p class="error">{{ .Error }}</p>{{ end }}
+{{ .Body }}
+</main>
+</body>
+</html>

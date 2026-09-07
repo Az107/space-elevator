@@ -1,0 +1,47 @@
+<section class="container">
+  <header class="page-head">
+    <h1>Apps</h1>
+    <div>
+      <a href="/apps/new" class="btn">Deploy from git</a>
+    </div>
+  </header>
+
+  <div id="dropzone" class="dropzone">
+    <p>Drop a tarball or zip here to deploy instantly</p>
+    <input type="file" id="drop-input" hidden>
+    <p class="dropzone-status" id="dropzone-status"></p>
+  </div>
+
+  {{ if not .Apps }}
+    <p class="empty">No apps yet. Deploy one or drop a tarball above.</p>
+  {{ else }}
+  <table class="apps">
+    <thead>
+      <tr><th>Name</th><th>Status</th><th>Source</th><th>Domains</th><th>Created</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{ range .Apps }}
+      <tr>
+        <td><a href="/apps/{{ .Name }}">{{ .Name }}</a></td>
+        <td><span class="status status-{{ .Status }}">{{ .Status }}</span></td>
+        <td class="src">{{ .SourceType }}<br><small>{{ .SourceRef }}</small></td>
+        <td>
+          {{ $d := index $.DomainsByApp .ID }}
+          {{ if $d }}{{ range $d }}<code>{{ . }}</code> {{ end }}{{ else }}<span class="muted">—</span>{{ end }}
+        </td>
+        <td>{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
+        <td class="row-actions">
+          <form action="/apps/{{ .Name }}/restart" method="post" class="inline">
+            <button class="link">Restart</button>
+          </form>
+          <form action="/apps/{{ .Name }}/remove" method="post" class="inline"
+                onsubmit="return confirm('Remove {{ .Name }}?')">
+            <button class="link danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+  {{ end }}
+</section>

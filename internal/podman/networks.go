@@ -44,3 +44,7 @@ func (c *Client) CreateNetwork(ctx context.Context, name string) (string, error)
 	}
 	return resp.ID, nil
 }
+
+func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
+	return c.cli.NetworkRemove(ctx, name)
+}

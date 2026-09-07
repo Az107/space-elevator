@@ -1,0 +1,41 @@
+<section class="container narrow">
+  <header class="page-head"><h1>Settings</h1></header>
+
+  <section class="card">
+    <h2>Public URL</h2>
+    <p class="muted">Where this dashboard is reachable from the internet.</p>
+    <dl class="kv">
+      <dt>Dashboard</dt>
+      <dd><a href="{{ .SelfRouteURL }}" target="_blank" rel="noopener"><code>{{ .SelfRouteURL }}</code></a>
+          {{ if not .SelfRouteExists }}<span class="warn">not registered</span>{{ end }}</dd>
+      <dt>App path prefix</dt>
+      <dd><code>{{ .AppPathPrefix }}{{ .PublicHost }}</code> → <code>https://{{ .PublicHost }}{{ .AppPathPrefix }}&lt;appname&gt;/</code></dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>Git credentials</h2>
+    <p class="muted">Personal access tokens for private repos. Stored per-host.</p>
+    {{ if .Creds }}
+    <ul class="creds">
+      {{ range .Creds }}<li><code>{{ .Host }}</code> · <code>{{ .Username }}</code></li>{{ end }}
+    </ul>
+    {{ else }}<p class="muted">No credentials saved.</p>{{ end }}
+
+    <form method="post" action="/settings/creds" class="form">
+      <label>Host <input name="host" placeholder="github.com" required></label>
+      <label>Username <input name="username" value="x-access-token"></label>
+      <label>Token <input type="password" name="token" required></label>
+      <button>Save</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Server</h2>
+    <dl class="kv">
+      <dt>Podman socket</dt><dd><code>{{ .SocketPath }}</code></dd>
+      <dt>Traefik dir</dt><dd><code>{{ .TraefikDir }}</code></dd>
+      <dt>Cert resolver</dt><dd><code>{{ .CertResolver }}</code></dd>
+    </dl>
+  </section>
+</section>

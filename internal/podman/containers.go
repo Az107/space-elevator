@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 )
 
 type Container struct {
@@ -21,7 +22,17 @@ type Container struct {
 }
 
 func (c *Client) ListContainers(ctx context.Context, all bool) ([]Container, error) {
-	cs, err := c.cli.ContainerList(ctx, container.ListOptions{All: all})
+	return c.ListContainersFiltered(ctx, all, nil)
+}
+
+func (c *Client) ListContainersFiltered(ctx context.Context, all bool, f map[string][]string) ([]Container, error) {
+	args := filters.NewArgs()
+	for k, vs := range f {
+		for _, v := range vs {
+			args.Add(k, v)
+		}
+	}
+	cs, err := c.cli.ContainerList(ctx, container.ListOptions{All: all, Filters: args})
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
@@ -59,6 +70,19 @@ func (c *Client) StartContainer(ctx context.Context, id string) error {
 
 func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) error {
 	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: force})
+}
+
+func (c *Client) LookupID(ctx context.Context, prefix string) (string, error) {
+	cs, err := c.ListContainersFiltered(ctx, true, map[string][]string{"id": {prefix}})
+	if err != nil || len(cs) == 0 {
+		return "", fmt.Errorf("not found")
+	}
+	for _, ctr := range cs {
+		if len(ctr.ID) >= len(prefix) && ctr.ID[:len(prefix)] == prefix {
+			return ctr.ID, nil
+		}
+	}
+	return "", fmt.Errorf("not found")
 }
 
 func formatPorts(ports []container.Port) []string {

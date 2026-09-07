@@ -1,0 +1,66 @@
+<section class="container">
+  <header class="page-head">
+    <h1>{{ .App.Name }}</h1>
+    <div class="row-actions">
+      <form action="/apps/{{ .App.Name }}/restart" method="post" class="inline">
+        <button>Restart</button>
+      </form>
+      <form action="/apps/{{ .App.Name }}/redeploy" method="post" class="inline"
+            onsubmit="return confirm('Redeploy {{ .App.Name }} from its stored source?')">
+        <button>Redeploy</button>
+      </form>
+      <form action="/apps/{{ .App.Name }}/remove" method="post" class="inline"
+            onsubmit="return confirm('Remove {{ .App.Name }}?')">
+        <button class="danger">Remove</button>
+      </form>
+    </div>
+  </header>
+
+  <div class="meta">
+    <p><span class="muted">Source:</span> <code>{{ .App.SourceType }}</code> <code>{{ .App.SourceRef }}</code></p>
+    <p>
+      <span class="status status-{{ .Status }}">{{ .Status }}</span>
+      <span class="muted">·</span>
+      <span class="muted">Services:</span>
+      {{ range .Services }}<code>{{ . }}</code> {{ end }}
+    </p>
+  </div>
+
+  <div class="grid">
+    <section class="card files-card">
+      <h2>Files</h2>
+      <p class="muted">Source tree from <code>{{ .App.SourceType }}</code> deploy. Click a file to view (text, max 256 KB).</p>
+      <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" style="width:100%;height:320px;border:1px solid var(--border);border-radius:6px;background:var(--bg);"></iframe>
+    </section>
+
+    <section class="card">
+      <h2>Domains</h2>
+      <ul class="domains">
+        {{ range .Domains }}
+        <li>
+          <code>{{ . }}</code>
+          <form action="/apps/{{ $.App.Name }}/domains/{{ . }}/delete" method="post" class="inline">
+            <button class="link danger">×</button>
+          </form>
+        </li>
+        {{ else }}
+        <li class="muted">No domains attached.</li>
+        {{ end }}
+      </ul>
+      <form action="/apps/{{ .App.Name }}/domains" method="post" class="inline-form">
+        <input type="text" name="domain" placeholder="app.example.com" required>
+        <button>Attach</button>
+      </form>
+    </section>
+
+    <section class="card logs-card">
+      <h2>Logs</h2>
+      <select id="log-service">
+        <option value="">all services</option>
+        {{ range .Services }}<option value="{{ . }}">{{ . }}</option>{{ end }}
+      </select>
+      <button id="log-follow">Follow</button>
+      <pre id="log-output" data-app="{{ .App.Name }}"></pre>
+    </section>
+  </div>
+</section>

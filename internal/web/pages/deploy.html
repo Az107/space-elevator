@@ -1,0 +1,21 @@
+<section class="container narrow">
+  <header class="page-head"><h1>Deploy from git</h1></header>
+
+  <form method="post" action="/apps/new" class="form">
+    <label>Git URL
+      <input type="url" name="url" placeholder="https://github.com/you/repo.git" required>
+    </label>
+    <label>Name (optional)
+      <input type="text" name="name" placeholder="derived from repo">
+    </label>
+    <label>Ref (branch/tag)
+      <input type="text" name="ref" value="main">
+    </label>
+    <button type="submit">Deploy</button>
+  </form>
+
+  <hr>
+  <p class="muted">
+    Or drag a tarball onto the <a href="/apps">apps page</a>.
+  </p>
+</section>

@@ -1,0 +1,9 @@
+<main class="auth">
+  <h1>Login</h1>
+  <form method="post" action="/login">
+    <label>Username <input type="text" name="username" value="admin" readonly></label>
+    <label>Password <input type="password" name="password" required autofocus></label>
+    {{ if .Error }}<p class="error">{{ .Error }}</p>{{ end }}
+    <button type="submit">Sign in</button>
+  </form>
+</main>

@@ -42,3 +42,15 @@ func (c *Client) PullImage(ctx context.Context, ref string) error {
 	_, err = io.Copy(io.Discard, rc)
 	return err
 }
+
+// RemoveImage deletes an image by repo tag or ID. Force=true also removes
+// any containers that reference it.
+func (c *Client) RemoveImage(ctx context.Context, ref string, force bool) error {
+	opts := image.RemoveOptions{Force: force}
+	items, err := c.cli.ImageRemove(ctx, ref, opts)
+	if err != nil {
+		return fmt.Errorf("image remove %s: %w", ref, err)
+	}
+	_ = items
+	return nil
+}

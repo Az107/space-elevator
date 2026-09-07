@@ -1,0 +1,34 @@
+{{define "files.html"}}
+<section class="files-tree">
+  {{ if .Error }}
+    <p class="error">{{ .Error }}</p>
+  {{ else if not .Tree }}
+    <p class="muted">No source available.</p>
+  {{ else }}
+    {{ template "files_tree" dict "App" .App "Node" .Tree }}
+  {{ end }}
+</section>
+{{end}}
+
+{{define "files_tree"}}
+{{ $app := .App }}{{ $node := .Node }}
+{{ if $node.Children }}
+<ul class="files">
+  {{ range $node.Children }}
+  <li>
+    {{ if .IsDir }}
+      <details open>
+        <summary class="dir"><code>{{ .Name }}/</code></summary>
+        {{ if .Children }}<div class="indent">{{ template "files_tree" dict "App" $app "Node" . }}</div>{{ end }}
+      </details>
+    {{ else }}
+      <a class="file" href="/apps/{{ $app.Name }}/file?path={{ .Path }}" target="_blank"><code>{{ .Name }}</code></a>
+      <span class="muted size">{{ .Size }} B</span>
+    {{ end }}
+  </li>
+  {{ end }}
+</ul>
+{{ else }}
+<p class="muted">(empty)</p>
+{{ end }}
+{{end}}

@@ -16,6 +16,11 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	rootCmd.AddCommand(commands.PodmanCmd)
+	rootCmd.AddCommand(commands.AppsCmd)
+	rootCmd.AddCommand(commands.DomainCmd)
+	rootCmd.AddCommand(commands.ServeCmd)
+	rootCmd.AddCommand(commands.SelfRouteCmd)
+	rootCmd.AddCommand(commands.RouteCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

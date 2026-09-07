@@ -1,0 +1,10 @@
+<main class="auth">
+  <h1>Welcome</h1>
+  <p>Set the admin password to get started.</p>
+  <form method="post" action="/setup">
+    <label>Password <input type="password" name="password" required autofocus minlength="8"></label>
+    <label>Confirm <input type="password" name="confirm" required minlength="8"></label>
+    {{ if .Error }}<p class="error">{{ .Error }}</p>{{ end }}
+    <button type="submit">Create account</button>
+  </form>
+</main>
