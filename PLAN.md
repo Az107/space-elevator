@@ -351,11 +351,18 @@ a valid YAML. E2E test against the live rootful Traefik pending — see
 - PAT storage form in settings, hydrated per host.
 - Status: code in tree, build clean (same verification as Phase 3).
 
-### Phase 5: Polish — Pending
-- Systemd unit for space-elevator itself.
-- README quickstart.
-- `space-elevator init` first-run wizard (set admin password).
-- `space-elevator update` for self-update.
+### Phase 5: Polish — partially done (2026-09-08)
+- Systemd **user** unit ✅ (`deploy/space-elevator.service`,
+  `make install-service`): runs `~/.local/bin/space-elevator serve
+  --addr 0.0.0.0:8080` as the user, `Restart=on-failure`, wants
+  `podman.socket`, enabled at boot with lingering. Binary installed to
+  `~/.local/bin` (rootless podman user-socket runtime; `/usr/bin`
+  would need root without benefit).
+- README quickstart ✅ — build/install, service management, CLI
+  examples (incl. advanced deploy), layout.
+- `space-elevator init` first-run wizard — pending (the web /setup
+  page covers first-run on the dashboard).
+- `space-elevator update` for self-update — pending.
 
 ## Estimated effort (revised)
 
@@ -475,6 +482,23 @@ The drop now responds through Traefik in 16 ms.
 
 ## Open questions (carry over)
 
+0. **Cross-origin login 403** — ✅ root-caused and fixed (2026-09-08).
+   Captured a real failing request via DevTools: Safari (and Chrome)
+   send `Origin: null` on the login POST because the page was loaded
+   through an HTTP→HTTPS redirect chain (Cloudflare proxies
+   `elevator.albruiz.dev`); the old store parsed `null` as "no valid
+   origin" and rejected, and — pre-fix — that branch never logged, so
+   journalctl showed nothing. Fix: `originCheck` now uses **Fetch
+   Metadata (`Sec-Fetch-Site`) as the primary signal** — browsers
+   attest `same-origin`/`same-site` truthfully and it can't be forged
+   from browsers — with the Origin-host comparison (request host +
+   configured `PublicHost`) kept as fallback for legacy clients.
+   `Origin: null` with same-site attestation is accepted; genuine
+   cross-site POSTs (sibling-subdomain attack surface) are rejected
+   with a log line. Unit tests cover the Safari/Chrome signature and
+   the attack cases; live smoke: Safari-sim via CF → 200, cross-site
+   sim → 403.
+
 1. Should path-prefix routes also strip a trailing slash and inject `/` for
    apps that expect a root? Currently we strip exactly `/app/<name>` and
    forward the rest verbatim. Apps that hard-code absolute paths (e.g.
@@ -500,3 +524,236 @@ The drop now responds through Traefik in 16 ms.
 - Webhooks (auto-redeploy) explicitly v2.
 - Templates explicitly v2.
 - Database provisioning explicitly out of scope.
+
+# v2 Plan
+
+## Decisions captured (v2)
+
+- Advanced deploy for non-containerized repos = **Dockerfile synthesis**
+  (builder image + build_command + run_command + port → single-stage
+  Dockerfile + synthetic compose). Mirrors the static-drop pattern; reuses
+  the whole build/Traefik pipeline. No buildpacks, no host-side builds.
+- Build/run image model: **single-stage** (build and run in the same
+  chosen image). Multi-stage (optional runtime image) deferred.
+- App secrets stored **plaintext in SQLite** (consistent with git PATs;
+  single-user, single-host, DB is root-only). Secrets are write-only:
+  never echoed back by UI or API.
+- PATs are **full-access only** (no scopes), optional expiry. Token
+  management is web-only in v1.
+
+## Phase 1 — Account management + CLI password reset — ✅ done (2026-09-08)
+
+No dependencies. Small; ships first and gives lockout recovery before
+riskier work.
+
+- **Store** (`internal/store/users.go`): `UpdateUserPassword`,
+  `UpdateUsername` (+`ErrUsernameTaken`), `GetUserByID`, `ListUsers`,
+  `DeleteOtherSessionsForUser`.
+- **Web**: "Account" card on the settings page:
+  - change username (re-auth with current password),
+  - change password (requires current password; invalidates all other
+    sessions, keeps the actor's).
+- **CLI** (`cmd/space-elevator/commands/user.go`):
+  - `space-elevator user reset-password [--username admin]` — prompts
+    twice (no echo, 8-char minimum), bcrypt-hashes, wipes all sessions
+    for that user. Host access = trust, so no old password required.
+    If the given username doesn't exist but the DB has exactly one
+    account (renamed in the dashboard), it targets that account with a
+    note.
+- **Live bug fixed during this phase**: page-level templates rendered
+  `value=""` into every hidden `csrf` input — only the layout nav (via
+  `$.CSRFToken`) and fetch() calls (meta tag + header) ever carried a
+  token, so all HTML form POSTs (save creds, restart, remove, domains,
+  logout) were rejected by `csrfProtect`. Fixed with a `pageCtx(r,
+  title)` helper that injects the context CSRF token into `PageData`
+  at every handler call site; regression test
+  `TestPageFormsCarryCSRFToken` guards it.
+- **Verify**: `go build ./...`, `go vet ./...`, unit tests pass
+  (store round-trips + render smoke). Live smoke against a temp-HOME
+  server: setup → settings renders Account card → rename with wrong
+  password rejected, with correct password applied → password change
+  rejects mismatched confirm, keeps actor session, signs out the other
+  device, old login dead → missing CSRF = 403 → CLI reset kills web
+  sessions and the CLI-set password logs in.
+
+## Phase 2 — Env vars & secrets plumbing — ✅ done (2026-09-08)
+
+Foundation: advanced deploy is half-useful without env, and the API needs
+the same env model.
+
+- **Migration 0003**: `app_secrets(app_id, key, value, PK(app_id,key),
+  FK cascade)` — secrets cascade-delete with the app.
+- **Store** (`internal/store/secrets.go`): `SetSecret`/`DeleteSecret`/
+  `ListSecretKeys` (key names only)/`GetSecrets`/`LoadRuntimeEnv` (the
+  single path that exposes secret values, merging them over plain env
+  with secret precedence), `UpdateAppEnv` (full-replace of env_json).
+  Shared parsing/validation: `ValidEnvKey`, `ParseKVLines` (textarea),
+  `ParseKVArgs` (CLI flags); keys must match `[A-Za-z_][A-Za-z0-9_]*`.
+- **Runtime wiring** — all five deploy paths now populate `meta.Env`
+  via `LoadRuntimeEnv` (web git deploy, web drop, web redeploy, CLI
+  deploy, CLI redeploy); previously every caller passed an empty map.
+- **Web**: env + secrets textareas on the deploy form (KEY=VALUE per
+  line, invalid lines rejected); app detail page has an Environment
+  editor (full-replace) and a Secrets manager (keys listed, values
+  write-only, add/delete per key). Env/secret edits apply on the next
+  redeploy — stated in the UI, since env is baked in at container
+  create time.
+- **CLI**: `apps deploy --env K=V --secret K=V` (repeatable). Flags
+  override stored vars; stored secrets are upserted (removal via the
+  web UI).
+- **Verify**: unit tests (key validation, KV parsing, secrets CRUD +
+  cascade, LoadRuntimeEnv precedence, UpdateAppEnv replace semantics).
+  Live e2e against local Podman with a busybox compose repo: deploy
+  with `--env PLAIN_VAR=hello --secret SECRET_VAR=s3cret
+  --env OVERRIDDEN=fromflag` → `podman exec` inside the container
+  showed all three; after editing env_json + adding a secret, redeploy
+  injected the updated values; `apps remove` cleaned everything.
+  Web smoke: env save (valid/invalid), secret set/list/delete with the
+  value never rendered in any page, CSRF enforced on the new routes.
+
+## Phase 3 — Advanced deploy (build command + run command) — ✅ done (2026-09-08)
+
+Depends on Phase 2. Dockerfile synthesis, mirroring the static-drop
+pattern.
+
+- **Migration 0004** on `apps`: `build_mode` ('compose'|'custom'),
+  `builder_image`, `build_command`, `run_command`, `listen_port`.
+  `scanApp` normalizes empty → 'compose'. Queries now share an
+  `appColumns` const.
+- **Synth** (`internal/builder/synth.go`): `CustomBuild{BuilderImage,
+  BuildCommand, RunCommand, ListenPort}` — validates (image required,
+  no shell metachars in the image ref, run command required, port
+  1-65535 with default 8080), renders a single-stage Dockerfile
+  (`FROM <builder>` / `WORKDIR /app` / `COPY . .` / optional
+  `RUN <build_cmd>` / `EXPOSE <port>` / `CMD ["/bin/sh","-c",
+  "<run_cmd>"]` JSON-encoded) + a `services.web` compose (bare port →
+  random host port, same as drops) + `.dockerignore` (.git).
+  `WriteCustomBuild` overwrites previous synth output so redeploys
+  pick up edits.
+- **Git flow**: clone → `FindComposeFile` fails → if custom settings
+  present, synth into the source dir → standard pipeline; if neither,
+  clear error ("repo has no compose file and no advanced build
+  settings"). A repo that ships its own compose wins over stale custom
+  settings (build_mode reset to 'compose').
+- **Redeploy** (web + CLI): regenerates synth files from stored
+  columns before Deploy, like static drops.
+- **Web**: collapsible `<details>` "Advanced" section on the deploy
+  form (no JS): builder image, port, build cmd, run cmd; validation
+  errors render on the form. App detail page shows
+  `Build: custom (image → run command)` in the meta strip.
+- **CLI**: `apps deploy --image/--build-cmd/--run-cmd/--port`.
+  Re-deploying over a custom app inherits its stored settings unless
+  overridden by flags.
+- **Secrets**: runtime-only, unchanged (never in the Dockerfile/build).
+
+#### Pre-existing bugs found & fixed during this phase
+
+1. **CLI deploy minted three different UUIDs per fresh deploy**
+   (`nameOrUUID` called `uuid.NewString()` on every call): clone dir,
+   app struct, and DB row all diverged. Invisible for image-only
+   deploys (source dir unused), fatal for custom builds that read the
+   source back on redeploy. Fixed: resolve the ID once, reuse
+   everywhere (`nameOrUUID` deleted).
+2. **CLI `apps redeploy` used the wrong source root**: hardcoded
+   `~/apps/sources` instead of `cfg.AppsRoot`, so it silently re-ran
+   image-only apps from a nonexistent dir. Now uses
+   `store.AppSourceDir`.
+3. **`BuildImage` swallowed build failures** (podman/build.go): the
+   build API reports errors inside a 200 response stream
+   (`{"error": ...}`); the body was discarded, so a failed RUN step
+   left the previous image under the tag and deploy "succeeded".
+   Now parsed (`readBuildOutput` + unit test); failures propagate with
+   the failing step.
+4. **Apps with a failed first deploy were unremovable**: empty/invalid
+   stored compose made both remove paths hard-fail on parse. Removal
+   now warns and proceeds with an empty spec (teardown filters by
+   labels anyway).
+
+- **Verify**: synth unit tests (Dockerfile shape, compose, validation,
+  port parsing, .dockerignore); `readBuildOutput` tests; live e2e with
+  a non-containerized Node repo (no Dockerfile/compose): CLI deploy
+  `--image busybox --build-cmd "…" --run-cmd "httpd …" --port 3999`
+  → build marker written inside the image, env+secrets injected,
+  random host port serving the built content; edited stored
+  build_command → redeploy served the new content. Web form advanced
+  deploy → app running + content served + meta strip correct. Broken
+  build command now fails the redeploy loudly with the failing STEP.
+  Note: the host is aarch64; the local `node:latest` image is amd64
+  and segfaults under QEMU binfmt — unrelated to the synth pipeline
+  (busybox arm64 used for the run tests).
+
+## Phase 4 — PATs + REST API — ✅ done (2026-09-08)
+
+Depends on Phase 2 (env model); after Phase 3 so the API covers custom
+builds for full parity from day one.
+
+- **Migration 0005**: `api_tokens(id, name, token_hash UNIQUE, prefix,
+  expires_at NULL, last_used_at NULL, created_at)`.
+- **Store** (`internal/store/tokens.go`): `MintAPIToken` (mints
+  `se_<43 chars>`; returns raw **once**; persists only the SHA-256
+  hash + a 12-char display prefix), `GetAPIToken` (expired tokens
+  resolve as unknown), `TouchAPIToken`, `ListAPITokens`,
+  `DeleteAPIToken`.
+- **Auth** (`internal/web/auth_api.go`): `requireAPIToken` middleware
+  for `/api/v1/*` — Bearer token, 401 + `WWW-Authenticate` on
+  miss/expiry/garbage; no cookies, no CSRF (the token is the
+  credential); last-used stamp throttled to one write per
+  token/minute. Covered by unit tests incl. expiry.
+- **Deployer package** (`internal/deployer`): the clone→build→run→route
+  pipeline now lives in ONE implementation with three consumers:
+  - `DeployGit` — parse-free pipeline: name validation, ID
+    resolution (reuses an existing byte-identical app row), env merge
+    (stored survives unless overridden), row create/update **up
+    front** (pending) so failures are visible, clone, compose-or-synth
+    resolution, secrets upsert, teardown-previous, deploy, status
+    updates, Traefik route (web git deploys now get their route file
+    too — previously only CLI deploys did), public URL log.
+  - `Redeploy` — static-drop + custom-build synth regeneration,
+    teardown, deploy, route (same as CLI/web flows did inline).
+  - Web `deployAsync`/`handleAppRedeploy` and CLI `runDeploy`/
+    `runAppsRedeploy` now wrap the deployer; `WriteStaticFiles` moved
+    from `web` to `builder` to avoid an import cycle. Domain
+    attach/detach and app restart/remove were likewise extracted into
+    shared helpers used by both HTML forms and the API.
+- **API** (`internal/web/handlers_api.go`, JSON via `jsonError`):
+  - `GET /apps`, `GET /apps/{name}` (live runtime status, services,
+    domains, `secret_keys` — values never exposed)
+  - `POST /apps` (name, url, ref, env/secrets as JSON objects,
+    `build` for advanced deploys) → 202 + row exists → poll
+  - `POST /apps/{name}/redeploy` (async) | `/restart` (sync) | `DELETE
+    /apps/{name}` (sync)
+  - `GET /apps/{name}/logs?tail=N&service=S` (text; reuse of the web
+    endpoint — no SSE in API v1)
+  - `PUT /apps/{name}/env` (flat object, full replace),
+    `PUT /apps/{name}/secrets` (flat object, upsert),
+    `DELETE /apps/{name}/secrets/{key}`
+  - `POST /apps/{name}/domains`, `DELETE /apps/{name}/domains/{domain}`
+- **PAT UI**: Settings → API tokens card: generator (name + expiry
+  never/30/60/90d) re-rendering the page with the raw token in a
+  highlighted once-only reveal; list shows prefix, expiry (last-used
+  stored, shown in future); per-token revoke (POST
+  `/settings/tokens/{id}/delete`).
+- **Docs**: `docs/api.md` — auth, conventions, endpoint table,
+  examples.
+- **Verify**: token store + middleware unit tests (expiry, garbage,
+  missing header, touch); live curl smoke: mint PAT via web form →
+  401s without/garbage token → deploy compose app + custom-build app
+  via API (content served both ways) → PUT env/secrets → redeploy →
+  podman env shows updated values → domain attach/detach + invalid
+  domain 400 → logs → restart → delete (row + containers gone) → web
+  revoke → API 401. Secret values verified absent from every API and
+  page response.
+
+## v2 out of scope (deferred)
+
+CLI remote-API client (`--api-url` + PAT), token scopes,
+encrypted-at-rest secrets, deploy webhooks, multi-user.
+
+## v2 effort
+
+| Phase | Est. |
+|---|---|
+| 1. Account + CLI reset | 0.5–1d |
+| 2. Env & secrets | 1–2d |
+| 3. Advanced deploy | 1–2d |
+| 4. PAT + API | 2–3d |

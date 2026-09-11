@@ -3,10 +3,13 @@ package podman
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
@@ -15,11 +18,14 @@ import (
 )
 
 type BuildOptions struct {
-	ContextDir   string
-	Dockerfile   string   // path relative to ContextDir, default "Dockerfile"
-	Tag          string   // e.g. "space-elevator/myapp/web:latest"
-	BuildArgs    map[string]*string
-	Platform     string
+	ContextDir string
+	Dockerfile string // path relative to ContextDir, default "Dockerfile"
+	Tag        string // e.g. "space-elevator/myapp/web:latest"
+	BuildArgs  map[string]*string
+	Platform   string
+	// Log receives the build's progress lines (steps, RUN output).
+	// Nil means the stream is only scanned for errors.
+	Log func(string)
 }
 
 func (c *Client) BuildImage(ctx context.Context, opts BuildOptions) error {
@@ -33,18 +39,54 @@ func (c *Client) BuildImage(ctx context.Context, opts BuildOptions) error {
 	defer tarCtx.Close()
 
 	resp, err := c.cli.ImageBuild(ctx, tarCtx, build.ImageBuildOptions{
-		Tags:       []string{opts.Tag},
-		Dockerfile: opts.Dockerfile,
-		BuildArgs:  opts.BuildArgs,
-		Remove:     true,
+		Tags:        []string{opts.Tag},
+		Dockerfile:  opts.Dockerfile,
+		BuildArgs:   opts.BuildArgs,
+		Remove:      true,
 		ForceRemove: true,
 	})
 	if err != nil {
 		return fmt.Errorf("image build: %w", err)
 	}
 	defer resp.Body.Close()
-	_, err = io.Copy(io.Discard, resp.Body)
-	return err
+	return readBuildOutput(resp.Body, opts.Log)
+}
+
+// readBuildOutput drains the build stream, forwarding progress lines
+// to log (when non-nil) and surfacing failures. The build API reports
+// errors as {"error": ...} messages inside a 200 response, so a failed
+// RUN step must be detected here — skipping the body would silently
+// leave the previous image under the tag.
+func readBuildOutput(r io.Reader, log func(string)) error {
+	dec := json.NewDecoder(r)
+	for {
+		var msg struct {
+			Stream      string `json:"stream"`
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return fmt.Errorf("image build: reading output: %w", err)
+		}
+		if log != nil && msg.Stream != "" {
+			for _, line := range strings.Split(strings.TrimRight(msg.Stream, "\n"), "\n") {
+				if strings.TrimSpace(line) != "" {
+					log(line)
+				}
+			}
+		}
+		if msg.Error != "" {
+			if msg.ErrorDetail.Message != "" {
+				return fmt.Errorf("image build failed: %s", msg.ErrorDetail.Message)
+			}
+			return fmt.Errorf("image build failed: %s", msg.Error)
+		}
+	}
 }
 
 func tarContext(dir string) (io.ReadCloser, error) {
@@ -56,6 +98,14 @@ func tarContext(dir string) (io.ReadCloser, error) {
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
+			}
+			// VCS metadata and device/socket nodes have no business in a
+			// build context (and opening the latter can block forever).
+			if info.IsDir() && info.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			if !info.IsDir() && !info.Mode().IsRegular() {
+				return nil
 			}
 			rel, _ := filepath.Rel(dir, path)
 			if rel == "." {
@@ -128,22 +178,22 @@ func (c *Client) CreateContainer(ctx context.Context, opts CreateOptions) (strin
 	}
 
 	cfg := &container.Config{
-		Image:       opts.Image,
-		Env:         opts.Env,
-		Cmd:         opts.Cmd,
+		Image:        opts.Image,
+		Env:          opts.Env,
+		Cmd:          opts.Cmd,
 		ExposedPorts: exposed,
-		Labels:      opts.Labels,
+		Labels:       opts.Labels,
 	}
 	hostCfg := &container.HostConfig{
-		PortBindings:  portBindings,
-		Binds:         opts.Binds,
-		AutoRemove:    opts.AutoRemove,
-		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-		SecurityOpt:   opts.SecurityOpt,
+		PortBindings:   portBindings,
+		Binds:          opts.Binds,
+		AutoRemove:     opts.AutoRemove,
+		RestartPolicy:  container.RestartPolicy{Name: "unless-stopped"},
+		SecurityOpt:    opts.SecurityOpt,
 		ReadonlyRootfs: opts.ReadonlyRootfs,
-		Tmpfs:         opts.Tmpfs,
-		CapDrop:       opts.CapDrop,
-		CapAdd:        opts.CapAdd,
+		Tmpfs:          opts.Tmpfs,
+		CapDrop:        opts.CapDrop,
+		CapAdd:         opts.CapAdd,
 		Resources: container.Resources{
 			Memory:    opts.Memory,
 			PidsLimit: opts.PidsLimit,

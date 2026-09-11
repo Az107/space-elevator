@@ -53,10 +53,16 @@ type Volume struct {
 }
 
 type AppMeta struct {
-	ID          string
-	Name        string
-	Env         map[string]string
-	Label       string
+	ID    string
+	Name  string
+	Env   map[string]string
+	Label string
+	// BuildEnv is the app's plain env, exposed to image builds: as
+	// --build-arg values and as a managed .env.local in the build
+	// context (so Vite/Next/CRA-style bundlers inline them at build
+	// time). Secrets deliberately excluded — build args and context
+	// files leak into image layers/metadata.
+	BuildEnv map[string]string
 	// StaticDrop is true for synth nginx:alpine drops that can safely
 	// run with a read-only root FS. Callers set it from the App.DropKind
 	// in the store. When false, the runtime leaves the root FS writable

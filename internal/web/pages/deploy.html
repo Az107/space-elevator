@@ -1,21 +1,61 @@
-<section class="container narrow">
-  <header class="page-head"><h1>Deploy from git</h1></header>
+<section class="narrow">
+  <header class="page-head">
+    <div>
+      <h1>Deploy from git</h1>
+      <p class="page-sub">Compose stack or Dockerfile, built and routed automatically.</p>
+    </div>
+  </header>
 
   <form method="post" action="/apps/new" class="form">
+    <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
     <label>Git URL
       <input type="url" name="url" placeholder="https://github.com/you/repo.git" required>
+      <span class="hint">Private repos need a token — add one under Settings.</span>
     </label>
-    <label>Name (optional)
-      <input type="text" name="name" placeholder="derived from repo">
-    </label>
-    <label>Ref (branch/tag)
-      <input type="text" name="ref" value="main">
-    </label>
-    <button type="submit">Deploy</button>
+    <div class="form-grid-2">
+      <label>Name
+        <input type="text" name="name" placeholder="derived from repo">
+      </label>
+      <label>Ref
+        <input type="text" name="ref" value="main">
+      </label>
+    </div>
+    <div class="form-grid-2">
+      <label>Environment variables
+        <textarea name="env" rows="4" placeholder="NODE_ENV=production&#10;PORT=3000" spellcheck="false"></textarea>
+        <span class="hint">KEY=VALUE per line. Also available to the image build (Vite/Next env inlining). Editable later on the app page; secrets are runtime-only.</span>
+      </label>
+      <label>Secrets
+        <textarea name="secrets" rows="4" placeholder="API_TOKEN=hunter2&#10;DB_PASSWORD=…" spellcheck="false" autocomplete="off"></textarea>
+        <span class="hint">Same format, but values are never shown again. Secrets override env vars.</span>
+      </label>
+    </div>
+    <details class="advanced">
+      <summary>Advanced — not containerized? Build it here</summary>
+      <p class="hint">For repos without a compose.yml or Dockerfile. The platform generates a Dockerfile from a base image plus your build &amp; run commands (single stage; build and run in the same image).</p>
+      <div class="form-grid-2">
+        <label>Builder image
+          <input type="text" name="image" placeholder="node:20-bookworm">
+          <span class="hint">Any image with /bin/sh. Required for advanced deploys.</span>
+        </label>
+        <label>Listen port
+          <input type="number" name="port" min="1" max="65535" placeholder="8080">
+          <span class="hint">Port your app serves on (default 8080).</span>
+        </label>
+      </div>
+      <label>Build command
+        <input type="text" name="build_cmd" placeholder="npm ci && npm run build">
+        <span class="hint">Optional — skip for interpreted apps that run from source.</span>
+      </label>
+      <label>Run command
+        <input type="text" name="run_cmd" placeholder="npm start">
+        <span class="hint">The container's CMD, run via /bin/sh. Required for advanced deploys.</span>
+      </label>
+    </details>
+    <div>
+      <button type="submit">Deploy</button>
+    </div>
   </form>
 
-  <hr>
-  <p class="muted">
-    Or drag a tarball onto the <a href="/apps">apps page</a>.
-  </p>
+  <p class="alt-note">Prefer a tarball? <a href="/apps">Drop it on the apps page.</a></p>
 </section>

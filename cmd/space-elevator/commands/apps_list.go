@@ -44,7 +44,7 @@ func runAppsList(cmd *cobra.Command, _ []string) error {
 		status := a.Status
 		spec, err := composer.Parse([]byte(a.ComposeYAML))
 		if err == nil {
-			if s, _, _ := rt.Status(cmd.Context(), composer.AppMeta{ID: a.ID, Name: a.Name, Label: a.Name}, spec); s != "" {
+			if s, _, _ := rt.Status(cmd.Context(), composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug}, spec); s != "" {
 				status = s
 			}
 		}
@@ -103,7 +103,7 @@ func runAppsLogs(cmd *cobra.Command, args []string) error {
 	defer cli.Close()
 	rt := composer.NewRuntime(cli, cfg.AppsRoot)
 
-	rc, err := rt.Logs(cmd.Context(), composer.AppMeta{ID: app.ID, Name: app.Name, Label: app.Name}, service, logsFollow, logsTail)
+	rc, err := rt.Logs(cmd.Context(), composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}, service, logsFollow, logsTail)
 	if err != nil {
 		return err
 	}

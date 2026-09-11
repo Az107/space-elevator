@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/docker/docker/pkg/stdcopy"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/albertoruiz/space-elevator/internal/composer"
+	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +39,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cs, err := s.Cli.ListContainersFiltered(r.Context(), true, map[string][]string{
-		"label": {composer.LabelApp + "=" + a.Name},
+		"label": {composer.LabelApp + "=" + a.Slug},
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -106,22 +107,46 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, targets []st
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// Multiple containers stream concurrently into one response; the
+	// writer must be serialized or frames interleave mid-line.
+	out := &lockedWriter{w: w, f: flusher}
+
 	for _, id := range targets {
 		id := id
 		go func() {
-			_ = id
 			rc, err := s.Cli.ContainerLogs(ctx, id, true, tail)
 			if err != nil {
-				fmt.Fprintf(w, "data: [%s] error: %v\n\n", id, err)
-				flusher.Flush()
+				out.printf("data: [%s] error: %v\n\n", id, err)
 				return
 			}
 			defer rc.Close()
-			s.demuxSSE(w, flusher, rc)
+			s.demuxSSE(out, rc)
 		}()
 	}
 
 	<-r.Context().Done()
+}
+
+// lockedWriter serializes SSE writes from the per-container goroutines.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+	f  http.Flusher
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n, err := l.w.Write(p)
+	l.f.Flush()
+	return n, err
+}
+
+func (l *lockedWriter) printf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fmt.Fprintf(l.w, format, args...)
+	l.f.Flush()
 }
 
 func (s *Server) demux(w io.Writer, src io.Reader) {
@@ -130,7 +155,7 @@ func (s *Server) demux(w io.Writer, src io.Reader) {
 	}
 }
 
-func (s *Server) demuxSSE(w http.ResponseWriter, flusher http.Flusher, src io.Reader) {
+func (s *Server) demuxSSE(w io.Writer, src io.Reader) {
 	pr, pw := io.Pipe()
 	go func() {
 		_, _ = stdcopy.StdCopy(pw, pw, src)
@@ -143,6 +168,5 @@ func (s *Server) demuxSSE(w http.ResponseWriter, flusher http.Flusher, src io.Re
 		// Escape SSE-forbidden newlines.
 		line = bytes.ReplaceAll(line, []byte{'\n'}, nil)
 		fmt.Fprintf(w, "data: %s\n\n", line)
-		flusher.Flush()
 	}
 }

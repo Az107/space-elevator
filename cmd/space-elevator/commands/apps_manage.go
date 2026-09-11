@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,10 +10,10 @@ import (
 
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/config"
+	"github.com/albertoruiz/space-elevator/internal/deployer"
 	"github.com/albertoruiz/space-elevator/internal/podman"
 	"github.com/albertoruiz/space-elevator/internal/store"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
-	"github.com/albertoruiz/space-elevator/internal/web"
 )
 
 var _ = fmt.Sprintf
@@ -39,9 +38,13 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A failed deploy may have empty or invalid stored compose. Removal
+	// must still work: runtime teardown filters containers by label,
+	// so only the image-cleanup step needs the spec.
 	spec, err := composer.Parse([]byte(app.ComposeYAML))
 	if err != nil {
-		return fmt.Errorf("stored compose is invalid: %w", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warn: stored compose is invalid (%v); removing by labels\n", err)
+		spec = &composer.Spec{}
 	}
 
 	cli, err := podman.New(cfg.SocketPath)
@@ -51,18 +54,18 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 	defer cli.Close()
 	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
 
-	meta := composer.AppMeta{ID: app.ID, Name: app.Name, Label: app.Name}
+	meta := composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}
 	fmt.Printf("Removing %s...\n", app.Name)
 	if err := rt.Remove(cmd.Context(), meta, spec); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove runtime: %v\n", err)
 	}
-	if err := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver).Remove(app.Name); err != nil {
+	if err := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver).Remove(app.Slug); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik remove: %v\n", err)
 	}
 	// Drop the local image so it can't be reused as a back-door after
 	// the app is gone. Ignore errors — the image may already be gone.
 	for svcName := range spec.Services {
-		tag := rt.ImageTag(app.Name, svcName)
+		tag := rt.ImageTag(app.Slug, svcName)
 		if err := cli.RemoveImage(cmd.Context(), tag, false); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warn: image remove %s: %v\n", tag, err)
 		}
@@ -91,6 +94,103 @@ var appsRedeployCmd = &cobra.Command{
 	RunE:  runAppsRedeploy,
 }
 
+var appsStartCmd = &cobra.Command{
+	Use:   "start <app>",
+	Short: "Start an app's containers",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAppsStart,
+}
+
+var appsStopCmd = &cobra.Command{
+	Use:   "stop <app>",
+	Short: "Stop an app's containers (keeps them for a later start)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAppsStop,
+}
+
+var appsRenameCmd = &cobra.Command{
+	Use:   "rename <app> <new-name>",
+	Short: "Rename an app (display name only; no rebuild)",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runAppsRename,
+}
+
+// runAppsStartStop is shared by start and stop; start selects which.
+func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
+	cfg := config.Default()
+	st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	app, err := st.GetAppByName(cmd.Context(), name)
+	if err != nil {
+		return err
+	}
+	cli, err := podman.New(cfg.SocketPath)
+	if err != nil {
+		return err
+	}
+	defer cli.Close()
+	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
+	meta := composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}
+
+	if start {
+		if err := rt.Start(cmd.Context(), meta); err != nil {
+			return err
+		}
+		_ = st.UpdateAppStatus(cmd.Context(), app.ID, "running")
+		fmt.Printf("OK: %s started.\n", app.Name)
+		return nil
+	}
+	if err := rt.Stop(cmd.Context(), meta); err != nil {
+		return err
+	}
+	_ = st.UpdateAppStatus(cmd.Context(), app.ID, "stopped")
+	fmt.Printf("OK: %s stopped.\n", app.Name)
+	return nil
+}
+
+func runAppsStart(cmd *cobra.Command, args []string) error {
+	return runAppsStartStop(cmd, args[0], true)
+}
+
+func runAppsStop(cmd *cobra.Command, args []string) error {
+	return runAppsStartStop(cmd, args[0], false)
+}
+
+func runAppsRename(cmd *cobra.Command, args []string) error {
+	oldName := strings.ToLower(strings.TrimSpace(args[0]))
+	newName := strings.ToLower(strings.TrimSpace(args[1]))
+	if !deployer.ValidAppName(newName) {
+		return fmt.Errorf("invalid app name %q: use 1-63 lowercase letters, digits, or hyphens", newName)
+	}
+	cfg := config.Default()
+	st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	app, err := st.GetAppByName(cmd.Context(), oldName)
+	if err != nil {
+		return err
+	}
+	if newName == app.Name {
+		fmt.Printf("OK: %s already named that.\n", app.Name)
+		return nil
+	}
+	if existing, err := st.GetAppByName(cmd.Context(), newName); err == nil && existing != nil {
+		return fmt.Errorf("app %q already exists", newName)
+	}
+	if err := st.UpdateAppName(cmd.Context(), app.ID, newName); err != nil {
+		return err
+	}
+	fmt.Printf("OK: %s renamed to %s (runtime unchanged).\n", app.Name, newName)
+	return nil
+}
+
 func runAppsRestart(cmd *cobra.Command, args []string) error {
 	cfg := config.Default()
 	st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db"))
@@ -114,7 +214,7 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	cs, err := cli.ListContainersFiltered(cmd.Context(), true, map[string][]string{
-		"label": {composer.LabelApp + "=" + app.Name},
+		"label": {composer.LabelApp + "=" + app.Slug},
 	})
 	if err != nil {
 		return err
@@ -147,10 +247,6 @@ func runAppsRedeploy(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	spec, err := composer.Parse([]byte(app.ComposeYAML))
-	if err != nil {
-		return fmt.Errorf("stored compose is invalid: %w", err)
-	}
 
 	cli, err := podman.New(cfg.SocketPath)
 	if err != nil {
@@ -159,78 +255,19 @@ func runAppsRedeploy(cmd *cobra.Command, args []string) error {
 	defer cli.Close()
 	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
 
-	sourceDir, err := redeploySourceDir(app)
-	if err != nil {
-		return err
-	}
-
-	// For drops, regenerate Dockerfile + nginx.conf from the extracted
-	// source so a re-deploy picks up the latest synth logic (doc-root
-	// detection, <base href> injection, perms via the build-context
-	// tar) without requiring a re-upload of the tarball.
-	if app.SourceType == "drop" && app.DropKind == "static" {
-		// If the app has any custom domains attached, it's served at the
-		// subdomain root — leave base href as "/" so absolute paths in
-		// the HTML resolve against the subdomain. Otherwise the auto
-		// path-prefix route applies, and the base href must match the
-		// Traefik router's "<app>-<service>" key.
-		domains, _ := st.GetAppDomains(cmd.Context(), app.ID)
-		baseHref := "/"
-		if len(domains) == 0 && cfg.AppPathPrefix != "" {
-			baseHref = strings.TrimRight(cfg.AppPathPrefix, "/") + "/" + app.Name + "-web/"
-		}
-		if _, err := web.WriteStaticFiles(sourceDir, baseHref); err != nil {
-			return fmt.Errorf("regenerate synth files: %w", err)
-		}
-	}
-
-	meta := composer.AppMeta{
-		ID:         app.ID,
-		Name:       app.Name,
-		Label:      app.Name,
-		StaticDrop: app.SourceType == "drop" && app.DropKind == "static",
-	}
-	fmt.Printf("Tearing down previous deployment for %s...\n", app.Name)
-	if err := rt.Remove(cmd.Context(), meta, spec); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove: %v\n", err)
-	}
-	fmt.Printf("Re-deploying %s...\n", app.Name)
-	if err := rt.Deploy(cmd.Context(), meta, spec, sourceDir); err != nil {
-		_ = st.UpdateAppStatus(cmd.Context(), app.ID, "error")
-		return err
-	}
-	if err := st.UpdateAppStatus(cmd.Context(), app.ID, "running"); err != nil {
-		return err
-	}
-
-	domains, _ := st.GetAppDomains(cmd.Context(), app.ID)
-	w := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
-	if _, err := traefik.ApplyAppRoute(cmd.Context(), traefik.AppOptions{
-		Writer:          w,
-		Client:          cli,
-		AppName:         app.Name,
-		Spec:            spec,
-		Domains:         domains,
+	dep := deployer.New(st, rt, cli, traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver), deployer.Options{
+		AppsRoot:        cfg.AppsRoot,
 		PublicHost:      cfg.PublicHost,
 		AppPathPrefix:   cfg.AppPathPrefix,
 		RootlessGateway: cfg.RootlessGateway,
-	}); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik: %v\n", err)
+		CertResolver:    cfg.CertResolver,
+		Log: func(f string, a ...any) {
+			fmt.Printf(f+"\n", a...)
+		},
+	})
+	if err := dep.Redeploy(cmd.Context(), app); err != nil {
+		return err
 	}
 	fmt.Printf("OK: %s redeployed.\n", app.Name)
 	return nil
-}
-
-// redeploySourceDir finds the on-disk source for an app, depending on whether
-// it was deployed from a git clone or a tarball drop.
-func redeploySourceDir(app *store.App) (string, error) {
-	home, _ := os.UserHomeDir()
-	switch app.SourceType {
-	case "git":
-		return filepath.Join(home, "apps", "sources", app.ID), nil
-	case "drop":
-		return filepath.Join(home, "apps", "drops", app.ID), nil
-	default:
-		return "", fmt.Errorf("unknown source type %q", app.SourceType)
-	}
 }

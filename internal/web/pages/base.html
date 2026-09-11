@@ -2,28 +2,71 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ if .Title }}{{ .Title }}{{ else }}space-elevator{{ end }}</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0B101B">
+  {{ if .Authed }}<meta name="csrf-token" content="{{ .CSRFToken }}">{{ end }}
+  <title>{{ if .Title }}{{ .Title }} · space-elevator{{ else }}space-elevator{{ end }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="{{ assetURL "/static/css/app.css" }}">
   <script src="/static/js/htmx.min.js"></script>
-  <script src="/static/js/app.js" defer></script>
+  <script src="{{ assetURL "/static/js/app.js" }}" defer></script>
 </head>
 <body>
 {{ if .Authed }}
 <header class="topbar">
-  <a href="/apps" class="brand">space-elevator</a>
-  <nav>
-    <a href="/apps">Apps</a>
-    <a href="/apps/new">Deploy</a>
-    <a href="/settings">Settings</a>
-    <form action="/logout" method="post" class="inline">
-      <button class="link">Logout</button>
+  <a href="/apps" class="brand">
+    <svg class="glyph" width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="M10 1v9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <rect x="6" y="10" width="8" height="6.5" rx="1.8" fill="var(--amber)"/>
+      <path d="M3.5 18.5h13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".4"/>
+    </svg>
+    space-elevator
+  </a>
+  <nav class="topnav" aria-label="Primary">
+    <a href="/apps" data-nav="apps">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+      Apps</a>
+    <a href="/apps/new" data-nav="deploy">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+      Deploy</a>
+    <a href="/settings" data-nav="settings">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h9m5 0h2M4 16h3m5 0h8"/><circle cx="15.5" cy="8" r="2.2"/><circle cx="9.5" cy="16" r="2.2"/></svg>
+      Settings</a>
+    <form action="/logout" method="post" class="inline nav-out">
+      <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+      <button type="submit">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4H6.5A1.5 1.5 0 0 0 5 5.5v13A1.5 1.5 0 0 0 6.5 20H14M16 8l4 4-4 4M20 12H10"/></svg>
+        Sign out</button>
     </form>
   </nav>
 </header>
+<nav class="mobile-nav" aria-label="Primary">
+  <a href="/apps" data-nav="apps">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+    Apps</a>
+  <a href="/apps/new" data-nav="deploy">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+    Deploy</a>
+  <a href="/settings" data-nav="settings">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4 8h9m5 0h2M4 16h3m5 0h8"/><circle cx="15.5" cy="8" r="2.2"/><circle cx="9.5" cy="16" r="2.2"/></svg>
+    Settings</a>
+  <form action="/logout" method="post" class="inline">
+    <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+    <button type="submit">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4H6.5A1.5 1.5 0 0 0 5 5.5v13A1.5 1.5 0 0 0 6.5 20H14M16 8l4 4-4 4M20 12H10"/></svg>
+      Sign out</button>
+  </form>
+</nav>
 {{ end }}
-<main>
-{{ if .Error }}<p class="error">{{ .Error }}</p>{{ end }}
+<main{{ if not .Authed }} class="auth"{{ end }}>
+{{ if .Error }}{{ if .Authed }}<div class="flash{{ if eq .FlashKind "s" }} flash-ok{{ end }}" role="alert" data-flash>
+  <span class="flash-text">{{ .Error }}</span>
+  <button type="button" class="flash-close" aria-label="Dismiss">&times;</button>
+</div>{{ else }}<div class="flash{{ if eq .FlashKind "s" }} flash-ok{{ end }}" role="alert">
+  <span class="flash-text">{{ .Error }}</span>
+</div>{{ end }}{{ end }}
 {{ .Body }}
 </main>
 </body>

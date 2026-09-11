@@ -1,0 +1,17 @@
+[Unit]
+Description=space-elevator dashboard (Podman-first deployment tool)
+Wants=network-online.target podman.socket
+After=network-online.target podman.socket
+
+[Service]
+ExecStart=%h/.local/bin/space-elevator serve --addr 0.0.0.0:8080
+# "always" (not on-failure): a dashboard must come back up even after a
+# clean SIGTERM — a stray kill would otherwise leave it dead for good.
+Restart=always
+RestartSec=3
+# State (SQLite DB, CSRF key) and apps root live under the home dir;
+# the unit only needs normal user access.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

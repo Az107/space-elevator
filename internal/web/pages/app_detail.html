@@ -1,66 +1,176 @@
 <section class="container">
   <header class="page-head">
-    <h1>{{ .App.Name }}</h1>
+    <div class="app-title">
+      <h1>{{ .App.Name }}</h1>
+      <span class="lamp lamp-{{ .Status }}"><i></i>{{ .Status }}</span>
+    </div>
     <div class="row-actions">
+      {{ if or (eq .Status "running") (eq .Status "partial") }}
+      <form action="/apps/{{ .App.Name }}/stop" method="post" class="inline"
+            data-confirm="Stop {{ .App.Name }}?">
+        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+        <button type="submit" class="ghost">Stop</button>
+      </form>
+      {{ else if and (eq .Status "stopped") (or (eq .App.Status "running") (eq .App.Status "stopped")) }}
+      <form action="/apps/{{ .App.Name }}/start" method="post" class="inline">
+        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+        <button type="submit" class="ghost">Start</button>
+      </form>
+      {{ end }}
       <form action="/apps/{{ .App.Name }}/restart" method="post" class="inline">
-        <button>Restart</button>
+        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+        <button type="submit" class="ghost">Restart</button>
       </form>
       <form action="/apps/{{ .App.Name }}/redeploy" method="post" class="inline"
-            onsubmit="return confirm('Redeploy {{ .App.Name }} from its stored source?')">
-        <button>Redeploy</button>
+            data-confirm="Redeploy {{ .App.Name }} from its stored source?">
+        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+        <button type="submit" class="ghost">Redeploy</button>
       </form>
+      <button type="button" class="ghost" data-rename-open>Rename</button>
       <form action="/apps/{{ .App.Name }}/remove" method="post" class="inline"
-            onsubmit="return confirm('Remove {{ .App.Name }}?')">
-        <button class="danger">Remove</button>
+            data-confirm="Remove {{ .App.Name }}?">
+        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+        <button type="submit" class="danger">Remove</button>
       </form>
     </div>
   </header>
 
-  <div class="meta">
-    <p><span class="muted">Source:</span> <code>{{ .App.SourceType }}</code> <code>{{ .App.SourceRef }}</code></p>
-    <p>
-      <span class="status status-{{ .Status }}">{{ .Status }}</span>
-      <span class="muted">·</span>
-      <span class="muted">Services:</span>
-      {{ range .Services }}<code>{{ . }}</code> {{ end }}
-    </p>
+  <dialog id="rename-dialog" class="modal">
+    <form action="/apps/{{ .App.Name }}/rename" method="post" class="form">
+      <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+      <h2>Rename app</h2>
+      <label>New name
+        <input type="text" name="name" value="{{ .App.Name }}"
+               pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" required autocomplete="off">
+      </label>
+      <p class="hint">Changes the display name and dashboard URL. Containers, routes, and attached domains are unaffected.</p>
+      <div class="modal-actions">
+        <button type="button" class="ghost" data-rename-close>Cancel</button>
+        <button type="submit">Rename</button>
+      </div>
+    </form>
+  </dialog>
+
+  {{ if and (eq .Status "error") .App.LastError }}
+  <div class="flash" role="alert">Last deploy failed: {{ .App.LastError }}</div>
+  {{ end }}
+
+  <div class="meta-strip">
+    <div>
+      <span class="k">Source</span>
+      <span class="v">
+        <span class="src-badge src-{{ .App.SourceType }}">
+          {{ if eq .App.SourceType "git" }}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          {{ else }}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+          {{ end }}
+          <span class="mono">{{ .App.SourceType }}</span>
+        </span>
+        {{ if .App.SourceRef }}<span class="mono src-ref">{{ .App.SourceRef }}</span>{{ end }}
+      </span>
+    </div>
+    <div>
+      <span class="k">Build</span>
+      <span class="v">{{ if eq .App.BuildMode "custom" }}<span class="mono">custom</span><span class="mono" title="{{ .App.BuildCommand }}">{{ .App.BuilderImage }} → {{ .App.RunCommand }}</span>{{ else }}<span class="muted">compose</span>{{ end }}</span>
+    </div>
+    <div>
+      <span class="k">Services</span>
+      <span class="v">{{ range .Services }}<code>{{ . }}</code>{{ else }}<span class="muted">none</span>{{ end }}</span>
+    </div>
+    <div>
+      <span class="k">Created</span>
+      <span class="v"><span class="mono">{{ .App.CreatedAt.Format "2006-01-02 15:04" }}</span></span>
+    </div>
   </div>
 
-  <div class="grid">
-    <section class="card files-card">
-      <h2>Files</h2>
-      <p class="muted">Source tree from <code>{{ .App.SourceType }}</code> deploy. Click a file to view (text, max 256 KB).</p>
-      <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" style="width:100%;height:320px;border:1px solid var(--border);border-radius:6px;background:var(--bg);"></iframe>
-    </section>
-
-    <section class="card">
-      <h2>Domains</h2>
-      <ul class="domains">
-        {{ range .Domains }}
-        <li>
-          <code>{{ . }}</code>
-          <form action="/apps/{{ $.App.Name }}/domains/{{ . }}/delete" method="post" class="inline">
-            <button class="link danger">×</button>
-          </form>
-        </li>
-        {{ else }}
-        <li class="muted">No domains attached.</li>
-        {{ end }}
-      </ul>
-      <form action="/apps/{{ .App.Name }}/domains" method="post" class="inline-form">
-        <input type="text" name="domain" placeholder="app.example.com" required>
-        <button>Attach</button>
-      </form>
-    </section>
-
-    <section class="card logs-card">
+  <div class="detail-grid">
+    <section class="panel logs-panel{{ if .Deploying }} deploying{{ end }}" id="logs-panel"
+             data-app="{{ .App.Name }}" data-deploying="{{ .Deploying }}" data-seq="{{ .BuildSeq }}">
       <h2>Logs</h2>
-      <select id="log-service">
-        <option value="">all services</option>
-        {{ range .Services }}<option value="{{ . }}">{{ . }}</option>{{ end }}
-      </select>
-      <button id="log-follow">Follow</button>
-      <pre id="log-output" data-app="{{ .App.Name }}"></pre>
+      <div class="deploy-progress" id="deploy-progress" {{ if not .Deploying }}hidden{{ end }}>
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="deploy-stage">Deploying…</span>
+        <ol class="progress-steps" id="deploy-steps">
+          <li data-stage="clone">Clone</li>
+          <li data-stage="compose">Compose</li>
+          <li data-stage="deploy">Build</li>
+          <li data-stage="route">Route</li>
+        </ol>
+      </div>
+      <div class="log-controls">
+        <select id="log-service" aria-label="Filter logs by service">
+          <option value="">all services</option>
+          {{ range .Services }}<option value="{{ . }}">{{ . }}</option>{{ end }}
+        </select>
+        <button type="button" id="log-follow" class="ghost">Follow</button>
+      </div>
+      <pre id="log-output" data-app="{{ .App.Name }}">{{ if .Deploying }}{{ range .BuildLines }}{{ if .Stage }}[{{ .Stage }}]{{ else }}{{ .Text }}{{ end }}
+{{ end }}{{ end }}</pre>
     </section>
+
+    <aside class="detail-side">
+      <section class="panel">
+        <h2>Environment</h2>
+        <p class="panel-desc">Plain variables, editable. Injected at runtime and during image builds on the next redeploy. Secrets are runtime-only.</p>
+        <form action="/apps/{{ .App.Name }}/env" method="post" class="form">
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <textarea name="env" rows="4" spellcheck="false" aria-label="Environment variables">{{ .EnvText }}</textarea>
+          <div>
+            <button type="submit" class="ghost">Save env</button>
+          </div>
+        </form>
+        <h2>Secrets</h2>
+        <p class="panel-desc">Injected like env vars but never displayed again. Secrets override env vars.</p>
+        {{ if .SecretKeys }}
+        <ul class="domains">
+          {{ range .SecretKeys }}
+          <li>
+            <span class="mono">{{ . }}</span>
+            <form action="/apps/{{ $.App.Name }}/secrets/{{ . }}/delete" method="post" class="inline"
+                  data-confirm="Delete secret {{ . }}?">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button type="submit" class="link danger" aria-label="Delete {{ . }}">delete</button>
+            </form>
+          </li>
+          {{ end }}
+        </ul>
+        {{ else }}<p class="muted quiet">No secrets set.</p>{{ end }}
+        <form action="/apps/{{ .App.Name }}/secrets" method="post" class="inline-form">
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <input type="text" name="key" placeholder="KEY" pattern="[A-Za-z_][A-Za-z0-9_]*" required>
+          <input type="password" name="value" placeholder="value" autocomplete="off" required>
+          <button type="submit">Set</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Domains</h2>
+        <ul class="domains">
+          {{ range .Domains }}
+          <li>
+            <span>{{ . }}</span>
+            <form action="/apps/{{ $.App.Name }}/domains/{{ . }}/delete" method="post" class="inline">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button type="submit" class="link danger" aria-label="Detach {{ . }}">detach</button>
+            </form>
+          </li>
+          {{ else }}
+          <li class="muted">No domains attached yet.</li>
+          {{ end }}
+        </ul>
+        <form action="/apps/{{ .App.Name }}/domains" method="post" class="inline-form">
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <input type="text" name="domain" placeholder="app.example.com" required>
+          <button type="submit">Attach</button>
+        </form>
+      </section>
+
+      <section class="panel files-panel">
+        <h2>Files</h2>
+        <p class="panel-desc">Source from the {{ .App.SourceType }} deploy. Click a file to view it (text, up to 256 KB).</p>
+        <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
+      </section>
+    </aside>
   </div>
 </section>

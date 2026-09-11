@@ -1,7 +1,8 @@
 {{define "files.html"}}
+<link rel="stylesheet" href="/static/css/app.css?v=2">
 <section class="files-tree">
   {{ if .Error }}
-    <p class="error">{{ .Error }}</p>
+    <p class="flash">{{ .Error }}</p>
   {{ else if not .Tree }}
     <p class="muted">No source available.</p>
   {{ else }}
@@ -18,12 +19,12 @@
   <li>
     {{ if .IsDir }}
       <details open>
-        <summary class="dir"><code>{{ .Name }}/</code></summary>
-        {{ if .Children }}<div class="indent">{{ template "files_tree" dict "App" $app "Node" . }}</div>{{ end }}
+        <summary>{{ .Name }}/</summary>
+        {{ if .Children }}{{ template "files_tree" dict "App" $app "Node" . }}{{ end }}
       </details>
     {{ else }}
-      <a class="file" href="/apps/{{ $app.Name }}/file?path={{ .Path }}" target="_blank"><code>{{ .Name }}</code></a>
-      <span class="muted size">{{ .Size }} B</span>
+      <a class="file" href="/apps/{{ $app.Name }}/file?path={{ .Path }}" target="_blank">{{ .Name }}</a>
+      <span class="size">{{ .Size }} B</span>
     {{ end }}
   </li>
   {{ end }}

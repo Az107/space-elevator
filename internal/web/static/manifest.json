@@ -1,0 +1,16 @@
+{
+  "name": "space-elevator",
+  "short_name": "elevator",
+  "description": "Podman-first deployment dashboard",
+  "start_url": "/apps",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0B101B",
+  "theme_color": "#0B101B",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

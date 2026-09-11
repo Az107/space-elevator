@@ -64,7 +64,9 @@ func (s *Server) handleAppFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAppFileView renders the contents of a single file from the app's
-// source directory. Refuses any path that escapes the source dir.
+// source directory. Refuses any path that escapes the source dir — both
+// lexical ("..") escapes and symlink escapes, since a cloned repo can
+// contain symlinks pointing anywhere on the host.
 func (s *Server) handleAppFileView(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	app, err := s.Store.GetAppByName(r.Context(), name)
@@ -75,6 +77,13 @@ func (s *Server) handleAppFileView(w http.ResponseWriter, r *http.Request) {
 	sourceDir, err := store.AppSourceDir(s.Cfg.AppsRoot, app)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Resolve the source dir itself so symlinked parents can't skew the
+	// prefix comparison below.
+	realSource, err := filepath.EvalSymlinks(sourceDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	rel := r.URL.Query().Get("path")
@@ -100,16 +109,31 @@ func (s *Server) handleAppFileView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "is a directory", http.StatusBadRequest)
 		return
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		http.Error(w, "not a regular file", http.StatusForbidden)
+		return
+	}
+	// Follow the whole symlink chain and re-verify containment.
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if real != realSource && !strings.HasPrefix(real, realSource+string(filepath.Separator)) {
+		http.Error(w, "path outside source directory", http.StatusForbidden)
+		return
+	}
 	if info.Size() > filesViewMaxBytes {
 		http.Error(w, fmt.Sprintf("file too large (%d bytes; max %d)", info.Size(), filesViewMaxBytes), http.StatusRequestEntityTooLarge)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	http.ServeFile(w, r, abs)
+	http.ServeFile(w, r, real)
 }
 
 // buildFileTree walks rootDir up to maxDepth and returns the tree of regular
-// files and directories. Hidden entries (starting with ".") are skipped.
+// files and directories. Hidden entries (starting with ".") and symlinks
+// are skipped — symlinks from untrusted sources must never be followed.
 // Aborts if the entry count exceeds maxEntries to avoid runaway responses
 // on accidentally-large trees.
 func buildFileTree(rootDir string, maxDepth, maxEntries int) (*fileNode, error) {
@@ -119,9 +143,12 @@ func buildFileTree(rootDir string, maxDepth, maxEntries int) (*fileNode, error) 
 		if count >= maxEntries {
 			return nil, fmt.Errorf("too many entries (>%d)", maxEntries)
 		}
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, nil
 		}
 		rel, _ := filepath.Rel(rootDir, path)
 		if rel == "." {
@@ -149,6 +176,9 @@ func buildFileTree(rootDir string, maxDepth, maxEntries int) (*fileNode, error) 
 		})
 		for _, e := range entries {
 			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if e.Type()&os.ModeSymlink != 0 {
 				continue
 			}
 			if depth >= maxDepth {

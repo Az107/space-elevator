@@ -21,6 +21,7 @@ func main() {
 	rootCmd.AddCommand(commands.ServeCmd)
 	rootCmd.AddCommand(commands.SelfRouteCmd)
 	rootCmd.AddCommand(commands.RouteCmd)
+	rootCmd.AddCommand(commands.UserCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

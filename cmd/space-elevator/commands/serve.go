@@ -25,8 +25,8 @@ var serveCmd = &cobra.Command{
 var ServeCmd = serveCmd
 
 var (
-	serveAddr           string
-	serveAutoRoute      bool
+	serveAddr      string
+	serveAutoRoute bool
 )
 
 func init() {
@@ -64,7 +64,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go func() { srvErr <- http.ListenAndServe(serveAddr, h) }()
 
 	// Background GC: every hour, sweep orphan drop dirs / tarballs /
-	// unused images so a crashed upload doesn't leave bytes on disk.
+	// unused images plus expired sessions so a crashed upload doesn't
+	// leave bytes (or dead auth rows) on disk.
 	gcStop := make(chan struct{})
 	go func() {
 		t := time.NewTicker(1 * time.Hour)
@@ -75,6 +76,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				return
 			case <-t.C:
 				runGcQuiet(cmd.Context(), cfg)
+				purgeCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				if err := srv.Store.PurgeExpiredSessions(purgeCtx); err != nil {
+					fmt.Fprintf(os.Stderr, "gc: sessions: %v\n", err)
+				}
+				cancel()
 			}
 		}
 	}()

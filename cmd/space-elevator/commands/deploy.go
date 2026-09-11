@@ -3,16 +3,15 @@ package commands
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/albertoruiz/space-elevator/internal/builder"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/config"
+	"github.com/albertoruiz/space-elevator/internal/deployer"
 	"github.com/albertoruiz/space-elevator/internal/podman"
 	"github.com/albertoruiz/space-elevator/internal/store"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
@@ -33,14 +32,27 @@ var deployCmd = &cobra.Command{
 }
 
 var (
-	deployName string
-	deployRef  string
+	deployName    string
+	deployRef     string
+	deployEnv     []string
+	deploySecrets []string
+	deployImage   string
+	deployBuild   string
+	deployRun     string
+	deployPort    string
 )
 
 func init() {
 	deployCmd.Flags().StringVarP(&deployName, "name", "n", "", "app name (slug); derived from repo if empty")
 	deployCmd.Flags().StringVarP(&deployRef, "ref", "r", "main", "branch or tag to deploy")
-	appsCmd.AddCommand(deployCmd, appsListCmd, appsLogsCmd, appsRemoveCmd, appsRestartCmd, appsRedeployCmd)
+	deployCmd.Flags().StringArrayVar(&deployEnv, "env", nil, "environment variable KEY=VALUE (repeatable; overrides the app's stored vars)")
+	deployCmd.Flags().StringArrayVar(&deploySecrets, "secret", nil, "secret KEY=VALUE (repeatable; upserted alongside stored secrets)")
+	deployCmd.Flags().StringVar(&deployImage, "image", "", "advanced deploy: builder image, e.g. node:20-bookworm")
+	deployCmd.Flags().StringVar(&deployBuild, "build-cmd", "", "advanced deploy: build command run inside the image")
+	deployCmd.Flags().StringVar(&deployRun, "run-cmd", "", "advanced deploy: run command (container CMD)")
+	deployCmd.Flags().StringVar(&deployPort, "port", "", "advanced deploy: port the app listens on (default 8080)")
+	appsCmd.AddCommand(deployCmd, appsListCmd, appsLogsCmd, appsRemoveCmd, appsRestartCmd, appsRedeployCmd,
+		appsStartCmd, appsStopCmd, appsRenameCmd)
 }
 
 func runDeploy(cmd *cobra.Command, args []string) error {
@@ -77,95 +89,82 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 
 	prev, _ := st.GetAppByName(ctx, deployName)
 
-	sourceDir := filepath.Join(cfg.AppsRoot, "sources", nameOrUUID(prev, deployName))
-	if err := os.MkdirAll(filepath.Dir(sourceDir), 0o755); err != nil {
-		return err
+	env, bad := store.ParseKVArgs(deployEnv)
+	if len(bad) > 0 {
+		return fmt.Errorf("invalid --env value(s) %q: use KEY=VALUE, key must match [A-Za-z_][A-Za-z0-9_]*", bad)
+	}
+	secrets, bad := store.ParseKVArgs(deploySecrets)
+	if len(bad) > 0 {
+		return fmt.Errorf("invalid --secret value(s) %q: use KEY=VALUE, key must match [A-Za-z_][A-Za-z0-9_]*", bad)
 	}
 
-	fmt.Println("Cloning repository...")
-	if err := builder.Clone(ctx, repoURL, deployRef, sourceDir, auth); err != nil {
-		return fmt.Errorf("git clone: %w", err)
-	}
-
-	composePath, err := builder.FindComposeFile(sourceDir)
-	if err != nil {
-		return err
-	}
-	composeBytes, err := os.ReadFile(composePath)
-	if err != nil {
-		return err
-	}
-	spec, err := composer.Parse(composeBytes)
-	if err != nil {
-		return fmt.Errorf("compose parse: %w", err)
-	}
-
-	app := &store.App{
-		ID:          nameOrUUID(prev, deployName),
-		Name:        deployName,
-		SourceType:  "git",
-		SourceRef:   repoURL,
-		GitRef:      deployRef,
-		ComposeYAML: string(composeBytes),
-		Env:         envOr(prev),
-		Status:      "pending",
-	}
-
-	meta := composer.AppMeta{ID: app.ID, Name: app.Name, Env: app.Env, Label: app.Name}
-
-	if prev != nil {
-		fmt.Println("Tearing down previous deployment...")
-		if oldSpec, err := composer.Parse([]byte(prev.ComposeYAML)); err == nil {
-			if err := rt.Remove(ctx, meta, oldSpec); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: remove old: %v\n", err)
-			}
+	// Advanced deploy: any build setting switches to custom build
+	// mode. Re-deploying over an existing custom app inherits its
+	// stored settings unless overridden by flags.
+	image := strings.TrimSpace(deployImage)
+	buildCmd := strings.TrimSpace(deployBuild)
+	runCmd := strings.TrimSpace(deployRun)
+	if prev != nil && prev.BuildMode == store.BuildModeCustom {
+		if image == "" {
+			image = prev.BuilderImage
+		}
+		if buildCmd == "" {
+			buildCmd = prev.BuildCommand
+		}
+		if runCmd == "" {
+			runCmd = prev.RunCommand
 		}
 	}
-
-	if prev == nil {
-		app.ID = uuid.NewString()
-		meta.ID = app.ID
-		if err := st.CreateApp(ctx, app); err != nil {
+	custom := image != "" || runCmd != "" || buildCmd != ""
+	port := 0
+	if deployPort != "" || (custom && prev != nil && prev.BuildMode == store.BuildModeCustom && deployPort == "") {
+		p, err := builder.ParsePort(deployPort)
+		if err != nil {
 			return err
 		}
-	} else {
-		app.ID = prev.ID
-		if err := st.UpdateApp(ctx, app); err != nil {
-			return err
+		port = p
+	}
+	if custom {
+		cb := builder.CustomBuild{BuilderImage: image, BuildCommand: buildCmd, RunCommand: runCmd, ListenPort: port}
+		if err := cb.Validate(); err != nil {
+			return fmt.Errorf("advanced deploy: %w", err)
 		}
+		port = cb.Port()
+	} else if deployPort != "" {
+		return fmt.Errorf("advanced deploy: --port needs --image or --run-cmd")
 	}
 
-	fmt.Printf("Deploying %s (%s)...\n", app.Name, app.SourceRef)
-	if err := rt.Deploy(ctx, meta, spec, sourceDir); err != nil {
-		_ = st.UpdateAppStatus(ctx, app.ID, "error")
-		return err
-	}
-	if err := st.UpdateAppStatus(ctx, app.ID, "running"); err != nil {
-		return err
+	var buildReq *builder.CustomBuild
+	if custom {
+		buildReq = &builder.CustomBuild{BuilderImage: image, BuildCommand: buildCmd, RunCommand: runCmd, ListenPort: port}
 	}
 
-	// Regenerate Traefik dynamic config (subdomain + auto path-prefix).
-	domains, _ := st.GetAppDomains(ctx, app.ID)
-	w := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
-	if _, err := traefik.ApplyAppRoute(ctx, traefik.AppOptions{
-		Writer:          w,
-		Client:          cli,
-		AppName:         app.Name,
-		Spec:            spec,
-		Domains:         domains,
+	tx := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
+	dep := deployer.New(st, rt, cli, tx, deployer.Options{
+		AppsRoot:        cfg.AppsRoot,
 		PublicHost:      cfg.PublicHost,
 		AppPathPrefix:   cfg.AppPathPrefix,
 		RootlessGateway: cfg.RootlessGateway,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: traefik: %v\n", err)
-	} else if len(domains) > 0 || cfg.AppPathPrefix != "" {
-		publicURL := publicAppURL(cfg.PublicHost, cfg.AppPathPrefix, app.Name)
-		fmt.Printf("Traefik config written; reachable at: %s\n", publicURL)
-		if len(domains) > 0 {
-			fmt.Printf("Custom domains: %s\n", strings.Join(domains, ", "))
-		}
+		CertResolver:    cfg.CertResolver,
+		Log: func(f string, a ...any) {
+			fmt.Printf(f+"\n", a...)
+		},
+	})
+	app, err := dep.DeployGit(ctx, deployer.GitRequest{
+		Name:    deployName,
+		RepoURL: repoURL,
+		Ref:     deployRef,
+		Env:     env,
+		Secrets: secrets,
+		Build:   buildReq,
+	})
+	if err != nil {
+		return err
 	}
 
+	if cfg.PublicHost != "" && cfg.AppPathPrefix != "" {
+		fmt.Printf("Traefik config written; reachable at: %s\n", publicAppURL(cfg.PublicHost, cfg.AppPathPrefix, app.Name))
+	}
 	fmt.Printf("OK: app %s is running.\n", app.Name)
 	return nil
 }
@@ -175,20 +174,6 @@ func publicAppURL(host, prefix, appName string) string {
 		return ""
 	}
 	return fmt.Sprintf("https://%s%s%s/", host, prefix, appName)
-}
-
-func nameOrUUID(prev *store.App, _ string) string {
-	if prev != nil {
-		return prev.ID
-	}
-	return uuid.NewString()
-}
-
-func envOr(prev *store.App) map[string]string {
-	if prev != nil && prev.Env != nil {
-		return prev.Env
-	}
-	return map[string]string{}
 }
 
 func nameFromURL(rawURL string) string {

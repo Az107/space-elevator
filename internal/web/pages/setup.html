@@ -1,10 +1,20 @@
-<main class="auth">
+<div class="auth-card">
+  <div class="glyph-wrap">
+    <svg width="30" height="30" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="M10 1v9" stroke="#93A0BC" stroke-width="1.4" stroke-linecap="round"/>
+      <rect x="6" y="10" width="8" height="6.5" rx="1.8" fill="#FFB224"/>
+      <path d="M3.5 18.5h13" stroke="#93A0BC" stroke-width="1.4" stroke-linecap="round" opacity=".4"/>
+    </svg>
+  </div>
   <h1>Welcome</h1>
-  <p>Set the admin password to get started.</p>
-  <form method="post" action="/setup">
-    <label>Password <input type="password" name="password" required autofocus minlength="8"></label>
-    <label>Confirm <input type="password" name="confirm" required minlength="8"></label>
-    {{ if .Error }}<p class="error">{{ .Error }}</p>{{ end }}
-    <button type="submit">Create account</button>
+  <p class="auth-sub">Set the admin password for this dashboard. This is the only account.</p>
+  <form method="post" action="/setup" class="form">
+    <label>Password
+      <input type="password" name="password" required autofocus minlength="8">
+    </label>
+    <label>Confirm
+      <input type="password" name="confirm" required minlength="8">
+    </label>
+    <button type="submit">Create admin account</button>
   </form>
-</main>
+</div>

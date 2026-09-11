@@ -154,7 +154,7 @@ func regenerateTraefik(cmd *cobra.Command, cfg *config.Config, st *store.Store, 
 	wrote, err := traefik.ApplyAppRoute(cmd.Context(), traefik.AppOptions{
 		Writer:          w,
 		Client:          cli,
-		AppName:         app.Name,
+		AppName:         app.Slug,
 		Spec:            spec,
 		Domains:         domains,
 		PublicHost:      cfg.PublicHost,

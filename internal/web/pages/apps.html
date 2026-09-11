@@ -1,47 +1,91 @@
 <section class="container">
   <header class="page-head">
-    <h1>Apps</h1>
     <div>
+      <h1>Apps</h1>
+      {{ if .Apps }}<p class="page-sub">{{ len .Apps }} deployed</p>{{ end }}
+    </div>
+    <div class="row-actions">
       <a href="/apps/new" class="btn">Deploy from git</a>
     </div>
   </header>
 
-  <div id="dropzone" class="dropzone">
-    <p>Drop a tarball or zip here to deploy instantly</p>
+  <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Upload a tarball or zip to deploy">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+    <p class="dz-title">Drop a <code>.tar.gz</code> or <code>.zip</code> to deploy it</p>
+    <p class="dz-hint">or click to choose a file</p>
     <input type="file" id="drop-input" hidden>
-    <p class="dropzone-status" id="dropzone-status"></p>
+    <p class="dropzone-status" id="dropzone-status" role="status"></p>
   </div>
 
   {{ if not .Apps }}
-    <p class="empty">No apps yet. Deploy one or drop a tarball above.</p>
+  <div class="empty-orbit">
+    <div>
+      <h2>Nothing in orbit yet</h2>
+      <p>Lift your first app: push a git repo with a compose file, or drop a tarball above.</p>
+      <a href="/apps/new" class="btn">Deploy from git</a>
+    </div>
+    <svg class="shaft" viewBox="0 0 150 190" fill="none" aria-hidden="true">
+      <ellipse cx="75" cy="38" rx="64" ry="16" stroke="var(--line)" stroke-dasharray="3 6" stroke-linecap="round"/>
+      <circle cx="139" cy="38" r="2.5" fill="var(--amber)"/>
+      <path d="M75 190V46" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/>
+      <rect x="62" y="30" width="26" height="17" rx="3.5" fill="var(--amber)"/>
+      <path d="M30 187h90" stroke="var(--line)" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  </div>
   {{ else }}
-  <table class="apps">
-    <thead>
-      <tr><th>Name</th><th>Status</th><th>Source</th><th>Domains</th><th>Created</th><th></th></tr>
-    </thead>
-    <tbody>
-      {{ range .Apps }}
-      <tr>
-        <td><a href="/apps/{{ .Name }}">{{ .Name }}</a></td>
-        <td><span class="status status-{{ .Status }}">{{ .Status }}</span></td>
-        <td class="src">{{ .SourceType }}<br><small>{{ .SourceRef }}</small></td>
-        <td>
-          {{ $d := index $.DomainsByApp .ID }}
-          {{ if $d }}{{ range $d }}<code>{{ . }}</code> {{ end }}{{ else }}<span class="muted">—</span>{{ end }}
-        </td>
-        <td>{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
-        <td class="row-actions">
-          <form action="/apps/{{ .Name }}/restart" method="post" class="inline">
-            <button class="link">Restart</button>
-          </form>
-          <form action="/apps/{{ .Name }}/remove" method="post" class="inline"
-                onsubmit="return confirm('Remove {{ .Name }}?')">
-            <button class="link danger">Remove</button>
-          </form>
-        </td>
-      </tr>
-      {{ end }}
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="apps">
+      <thead>
+        <tr><th>Name</th><th>Status</th><th>Source</th><th>Domains</th><th>Created</th><th></th></tr>
+      </thead>
+      <tbody>
+        {{ range .Apps }}
+        <tr>
+          <td class="app-name" data-label="Name"><a href="/apps/{{ .Name }}">{{ .Name }}</a></td>
+          <td data-label="Status"><span class="lamp lamp-{{ .Status }}"><i></i>{{ .Status }}</span></td>
+          <td class="src" data-label="Source">
+            <span class="src-badge src-{{ .SourceType }}">
+              {{ if eq .SourceType "git" }}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              {{ else }}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+              {{ end }}
+              <span class="mono">{{ .SourceType }}</span>
+            </span>
+            {{ if .SourceRef }}<span class="mono">{{ .SourceRef }}</span>{{ end }}
+          </td>
+          <td class="cell-domains" data-label="Domains">
+            {{ $d := index $.DomainsByApp .ID }}
+            {{ if $d }}{{ range $d }}<code>{{ . }}</code> {{ end }}{{ else }}<span class="muted">none</span>{{ end }}
+          </td>
+          <td class="cell-date" data-label="Created">{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
+          <td class="row-actions">
+            {{ if eq .Status "running" }}
+            <form action="/apps/{{ .Name }}/stop" method="post" class="inline"
+                  data-confirm="Stop {{ .Name }}?">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button class="link">Stop</button>
+            </form>
+            {{ else if eq .Status "stopped" }}
+            <form action="/apps/{{ .Name }}/start" method="post" class="inline">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button class="link">Start</button>
+            </form>
+            {{ end }}
+            <form action="/apps/{{ .Name }}/restart" method="post" class="inline">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button class="link">Restart</button>
+            </form>
+            <form action="/apps/{{ .Name }}/remove" method="post" class="inline"
+                  data-confirm="Remove {{ .Name }}?">
+              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+              <button class="link danger">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+  </div>
   {{ end }}
 </section>

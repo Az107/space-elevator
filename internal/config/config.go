@@ -8,18 +8,18 @@ import (
 )
 
 type Config struct {
-	SocketPath       string
-	DataDir          string
-	StateDir         string
-	TraefikDir       string
-	PublicHost       string
-	PublicPath       string
-	DashboardURL     string
-	CertResolver     string
-	QuadletDir       string
-	AppsRoot         string
-	DefaultNetwork   string
-	AppPathPrefix    string
+	SocketPath     string
+	DataDir        string
+	StateDir       string
+	TraefikDir     string
+	PublicHost     string
+	PublicPath     string
+	DashboardURL   string
+	CertResolver   string
+	QuadletDir     string
+	AppsRoot       string
+	DefaultNetwork string
+	AppPathPrefix  string
 	// RootlessGateway is the IP that the host exposes the rootless podman
 	// network on. From the rootful Traefik container's perspective,
 	// reaching "<RootlessGateway>:<host-published-port>" hits the
@@ -30,7 +30,11 @@ type Config struct {
 	// Container defaults applied at deploy time. "0" means "no limit"
 	// — the kernel applies only the cgroup default.
 	DefaultMemoryBytes int64
-	DefaultPidsLimit    int64
+	DefaultPidsLimit   int64
+	// InsecureCookies disables the Secure flag on the session cookie.
+	// Only for plain-HTTP local testing; production traffic goes through
+	// Traefik's TLS entrypoint and should leave this unset.
+	InsecureCookies bool
 }
 
 func Default() *Config {
@@ -54,6 +58,7 @@ func Default() *Config {
 		RootlessGateway:    envOr("SPACE_ELEVATOR_ROOTLESS_GATEWAY", "10.89.0.1"),
 		DefaultMemoryBytes: parseSizeBytes(envOr("SPACE_ELEVATOR_MEMORY_LIMIT", "512M")),
 		DefaultPidsLimit:   parseInt64(envOr("SPACE_ELEVATOR_PIDS_LIMIT", "256")),
+		InsecureCookies:    envOr("SPACE_ELEVATOR_INSECURE_COOKIES", "") != "",
 	}
 }
 
@@ -114,9 +119,18 @@ func defaultSocket() string {
 }
 
 func (c *Config) EnsureDirs() error {
-	dirs := []string{c.DataDir, c.StateDir, c.AppsRoot}
+	// StateDir holds the SQLite DB (password hashes, git tokens) and the
+	// CSRF key — keep it owner-only.
+	dirs := []struct {
+		path string
+		perm os.FileMode
+	}{
+		{c.DataDir, 0o755},
+		{c.StateDir, 0o700},
+		{c.AppsRoot, 0o755},
+	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d.path, d.perm); err != nil {
 			return err
 		}
 	}

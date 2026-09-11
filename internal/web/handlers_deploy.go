@@ -2,18 +2,24 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/albertoruiz/space-elevator/internal/builder"
 	"github.com/albertoruiz/space-elevator/internal/composer"
+	"github.com/albertoruiz/space-elevator/internal/deployer"
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
 
@@ -22,8 +28,22 @@ type deployFormData struct {
 	Error string
 }
 
+// deployTimeout bounds a full clone+build+run deploy so a stuck git
+// server or image build can't wedge a worker forever.
+const deployTimeout = 30 * time.Minute
+
+// trailing hyphens are disallowed so names can't be glued into double
+// dashes in downstream keys (image tags, Traefik router names).
+var appNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// validAppName enforces URL/hostname/container-safe names up front, so
+// nothing downstream (paths, Traefik keys, redirects) ever sees junk.
+func validAppName(name string) bool {
+	return appNamePattern.MatchString(name)
+}
+
 func (s *Server) handleDeployForm(w http.ResponseWriter, r *http.Request) {
-	s.Renderer.Render(w, "deploy.html", deployFormData{PageData: PageData{Authed: true}})
+	s.Renderer.Render(w, r, "deploy.html", deployFormData{PageData: pageCtx(r, "Deploy")})
 }
 
 func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
@@ -32,84 +52,194 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repoURL := r.FormValue("url")
-	name := r.FormValue("name")
+	name := strings.ToLower(strings.TrimSpace(r.FormValue("name")))
 	ref := r.FormValue("ref")
 	if ref == "" {
 		ref = "main"
 	}
+	env, envBad := store.ParseKVLines(r.FormValue("env"))
+	secrets, secretBad := store.ParseKVLines(r.FormValue("secrets"))
+
+	// Advanced section: a repo that isn't containerized gets a
+	// synthesized single-stage Dockerfile (builder image + build/run
+	// commands). Any of image/run_cmd switches to custom build mode.
+	builderImage := strings.TrimSpace(r.FormValue("image"))
+	buildCmd := strings.TrimSpace(r.FormValue("build_cmd"))
+	runCmd := strings.TrimSpace(r.FormValue("run_cmd"))
+	port, portErr := builder.ParsePort(r.FormValue("port"))
+	custom := builderImage != "" || runCmd != "" || buildCmd != ""
+	if custom {
+		cb := builder.CustomBuild{
+			BuilderImage: builderImage,
+			BuildCommand: buildCmd,
+			RunCommand:   runCmd,
+			ListenPort:   port,
+		}
+		if err := cb.Validate(); err != nil {
+			s.Renderer.Render(w, r, "deploy.html", deployFormData{
+				PageData: pageCtx(r, "Deploy"),
+				Error:    "Advanced deploy: " + err.Error() + ".",
+			})
+			return
+		}
+	}
+	if !custom && portErr == nil && r.FormValue("port") != "" {
+		// A port with no build settings means the user half-filled the
+		// advanced section; surface it instead of silently ignoring.
+		portErr = errors.New("builder image or run command required when setting a port")
+	}
+	if portErr != nil {
+		s.Renderer.Render(w, r, "deploy.html", deployFormData{
+			PageData: pageCtx(r, "Deploy"),
+			Error:    "Advanced deploy: " + portErr.Error() + ".",
+		})
+		return
+	}
+
 	if name == "" {
-		name = nameFromURL(repoURL)
+		name = strings.ToLower(nameFromURL(repoURL))
+	}
+	fail := func(msg string) {
+		s.Renderer.Render(w, r, "deploy.html", deployFormData{
+			PageData: pageCtx(r, "Deploy"),
+			Error:    msg,
+		})
 	}
 	if repoURL == "" || name == "" {
-		s.Renderer.Render(w, "deploy.html", deployFormData{
-			PageData: PageData{Authed: true},
-			Error:    "URL and name required."})
+		fail("URL and name required.")
 		return
 	}
-
+	if !validAppName(name) {
+		fail(fmt.Sprintf("Invalid app name %q: use 1-63 lowercase letters, digits, or hyphens (leading character must be a letter or digit).", name))
+		return
+	}
+	if len(envBad) > 0 || len(secretBad) > 0 {
+		bad := append(append([]string{}, envBad...), secretBad...)
+		fail(fmt.Sprintf("Invalid environment/secret line(s) %q: use KEY=VALUE per line; keys must match [A-Za-z_][A-Za-z0-9_]*.", bad))
+		return
+	}
 	if _, err := s.Store.GetAppByName(r.Context(), name); err == nil {
-		s.Renderer.Render(w, "deploy.html", deployFormData{
-			PageData: PageData{Authed: true},
-			Error:    fmt.Sprintf("app %q already exists; remove it first or use a different name.", name)})
+		fail(fmt.Sprintf("App %q already exists; remove it first or use a different name.", name))
 		return
 	}
 
-	go s.deployAsync(name, repoURL, ref)
+	// Create the row up front so the redirect target exists
+	// immediately and failures are visible on the detail page.
+	// DeployGit detects the pending row and takes the update path;
+	// secrets are stored there (values never touch the row).
+	appID := uuid.NewString()
+	buildMode := store.BuildModeCompose
+	if custom {
+		buildMode = store.BuildModeCustom
+	}
+	app := &store.App{
+		ID:           appID,
+		Name:         name,
+		Slug:         name,
+		SourceType:   "git",
+		SourceRef:    repoURL,
+		GitRef:       ref,
+		Env:          env,
+		BuildMode:    buildMode,
+		BuilderImage: builderImage,
+		BuildCommand: buildCmd,
+		RunCommand:   runCmd,
+		ListenPort:   port,
+		Status:       "pending",
+	}
+	if err := s.Store.CreateApp(r.Context(), app); err != nil {
+		fail(fmt.Sprintf("Could not create app %q: %v.", name, err))
+		return
+	}
+
+	var buildReq *builder.CustomBuild
+	if custom {
+		buildReq = &builder.CustomBuild{
+			BuilderImage: builderImage,
+			BuildCommand: buildCmd,
+			RunCommand:   runCmd,
+			ListenPort:   port,
+		}
+	}
+	go s.deployAsync(deployer.GitRequest{
+		Name:    name,
+		RepoURL: repoURL,
+		Ref:     ref,
+		Env:     env,
+		Secrets: secrets,
+		Build:   buildReq,
+	})
 	http.Redirect(w, r, "/apps/"+name, http.StatusSeeOther)
 }
 
-func (s *Server) deployAsync(name, repoURL, ref string) {
-	ctx := context.Background()
-	host, _ := url.Parse(repoURL)
-	auth := &builder.Auth{}
-	if cred, err := s.Store.GetCredentialForHost(ctx, host.Host); err == nil {
-		auth.Username = cred.Username
-		auth.Token = cred.Token
-	}
+// deploySinkFor returns a per-deploy copy of the deployer whose Log,
+// Stage and runtime hooks stream into the app's build-log sink, plus
+// the freshly reset sink. The shared deployer/runtime are never
+// mutated, so concurrent deploys don't interleave their feeds.
+func (s *Server) deploySinkFor(name string) (*deployer.Deployer, *buildLog) {
+	sink := s.BuildLogs.get(name)
+	sink.Reset()
+	d := *s.Deployer
+	rt := *s.Deployer.Runtime
+	rt.Log = sink.Append
+	d.Runtime = &rt
+	d.Opts.Log = sink.appendf
+	d.Opts.Stage = sink.Stage
+	return &d, sink
+}
 
-	appID := uuid.NewString()
-	sourceDir := filepath.Join(s.Cfg.AppsRoot, "sources", appID)
-	if err := os.MkdirAll(filepath.Dir(sourceDir), 0o755); err != nil {
+// deployAsync runs the shared deploy pipeline with bounded concurrency,
+// streaming progress and image-build output into the app's build log;
+// every failure is recorded on the app row by the deployer.
+func (s *Server) deployAsync(req deployer.GitRequest) {
+	s.deploySem <- struct{}{}
+	defer func() { <-s.deploySem }()
+
+	d, sink := s.deploySinkFor(req.Name)
+
+	defer func() {
+		if p := recover(); p != nil {
+			if app, err := s.Store.GetAppByName(context.Background(), req.Name); err == nil {
+				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal deploy panic: %v", p))
+			}
+			sink.Append(fmt.Sprintf("✕ internal deploy panic: %v", p))
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
+	defer cancel()
+	if _, err := d.DeployGit(ctx, req); err != nil {
+		sink.Append("✕ deploy failed: " + err.Error())
 		return
 	}
-	if err := builder.Clone(ctx, repoURL, ref, sourceDir, auth); err != nil {
-		return
-	}
-	composePath, err := builder.FindComposeFile(sourceDir)
+	sink.Append("✓ deploy complete")
+}
+
+type deployStatusData struct {
+	Status    string         `json:"status"`
+	LastError string         `json:"last_error,omitempty"`
+	Seq       int            `json:"seq"`
+	Lines     []buildLogLine `json:"lines,omitempty"`
+}
+
+// handleDeployStatus serves the deploy progress feed polled by the
+// app detail page: the row's status plus any build-log lines after
+// the client's last seen seq (?after=seq).
+func (s *Server) handleDeployStatus(w http.ResponseWriter, r *http.Request) {
+	a, err := s.appOr404(w, r)
 	if err != nil {
 		return
 	}
-	composeBytes, err := os.ReadFile(composePath)
-	if err != nil {
-		return
-	}
-	spec, err := composer.Parse(composeBytes)
-	if err != nil {
-		return
-	}
-	app := &store.App{
-		ID:          appID,
-		Name:        name,
-		SourceType:  "git",
-		SourceRef:   repoURL,
-		GitRef:      ref,
-		ComposeYAML: string(composeBytes),
-		Env:         map[string]string{},
-		Status:      "pending",
-	}
-	if err := s.Store.CreateApp(ctx, app); err != nil {
-		return
-	}
-	meta := composer.AppMeta{
-		ID:    app.ID,
-		Name:  app.Name,
-		Label: app.Name,
-	}
-	if err := s.Runtime.Deploy(ctx, meta, spec, sourceDir); err != nil {
-		_ = s.Store.UpdateAppStatus(ctx, app.ID, "error")
-		return
-	}
-	_ = s.Store.UpdateAppStatus(ctx, app.ID, "running")
+	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
+	lines, seq := s.BuildLogs.Since(a.Slug, after)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(deployStatusData{
+		Status:    a.Status,
+		LastError: a.LastError,
+		Seq:       seq,
+		Lines:     lines,
+	})
 }
 
 func nameFromURL(rawURL string) string {
@@ -128,8 +258,8 @@ func nameFromURL(rawURL string) string {
 
 // handleDrop handles a multipart tarball upload from the drag-drop UI.
 func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		jsonError(w, http.StatusBadRequest, "could not parse upload: "+err.Error())
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		jsonError(w, http.StatusBadRequest, "could not parse upload (is it larger than the size limit?): "+err.Error())
 		return
 	}
 	f, header, err := r.FormFile("tarball")
@@ -198,7 +328,7 @@ func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
 			prefix := strings.TrimRight(s.Cfg.AppPathPrefix, "/")
 			baseHref = prefix + "/" + name + "-web/"
 		}
-		root, err := WriteStaticFiles(destDir, baseHref)
+		root, err := builder.WriteStaticFiles(destDir, baseHref)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -207,16 +337,10 @@ func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(os.Stderr, "info: detected nested doc root %q for %s\n", root, header.Filename)
 		}
 	}
-	meta := composer.AppMeta{
-		ID:         id,
-		Name:       name,
-		Label:      name,
-		StaticDrop: kind == "static",
-	}
-
 	app := &store.App{
 		ID:          id,
 		Name:        name,
+		Slug:        name,
 		SourceType:  "drop",
 		SourceRef:   header.Filename,
 		GitRef:      "",
@@ -234,13 +358,36 @@ func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	d, sink := s.deploySinkFor(name)
 	go func() {
-		ctx := context.Background()
-		if err := s.Runtime.Deploy(ctx, meta, spec, destDir); err != nil {
-			_ = s.Store.UpdateAppStatus(ctx, id, "error")
+		s.deploySem <- struct{}{}
+		defer func() { <-s.deploySem }()
+		ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
+		defer cancel()
+		env, err := s.Store.LoadRuntimeEnv(ctx, id, app.Env)
+		if err != nil {
+			_ = s.Store.UpdateAppStatusErr(ctx, id, "error", "load env: "+err.Error())
+			sink.Append("✕ deploy failed: load env: " + err.Error())
 			return
 		}
-		_ = s.Store.UpdateAppStatus(ctx, id, "running")
+		meta := composer.AppMeta{
+			ID:         id,
+			Name:       app.Slug,
+			Env:        env,
+			Label:      app.Slug,
+			BuildEnv:   app.Env,
+			StaticDrop: kind == "static",
+		}
+		sink.Stage("deploy")
+		sink.appendf("Deploying %s...", name)
+		if err := d.Runtime.Deploy(ctx, meta, spec, destDir); err != nil {
+			_ = s.Store.UpdateAppStatusErr(ctx, id, "error", "deploy failed: "+err.Error())
+			sink.Append("✕ deploy failed: " + err.Error())
+			return
+		}
+		_ = s.Store.UpdateAppStatusErr(ctx, id, "running", "")
+		sink.Stage("route")
+		sink.Append("✓ deploy complete")
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
