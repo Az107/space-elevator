@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/config"
 	"github.com/albertoruiz/space-elevator/internal/deployer"
@@ -37,6 +38,7 @@ type Server struct {
 	Deployer  *deployer.Deployer
 	TraefikW  *traefik.Writer
 	CSRF      *CSRF
+	Audit     *audit.Logger
 	BuildLogs *buildLogRegistry
 	logins    *loginLimiter
 	deploySem chan struct{}
@@ -62,12 +64,14 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}
 	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
 	tw := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
+	au := audit.New(st, os.Stderr)
 	dep := deployer.New(st, rt, cli, tw, deployer.Options{
 		AppsRoot:        cfg.AppsRoot,
 		PublicHost:      cfg.PublicHost,
 		AppPathPrefix:   cfg.AppPathPrefix,
 		RootlessGateway: cfg.RootlessGateway,
 		CertResolver:    cfg.CertResolver,
+		Audit:           au,
 	})
 	return &Server{
 		Cfg:       cfg,
@@ -78,6 +82,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		Deployer:  dep,
 		TraefikW:  tw,
 		CSRF:      csrf,
+		Audit:     au,
 		BuildLogs: newBuildLogRegistry(),
 		logins:    newLoginLimiter(),
 		deploySem: make(chan struct{}, 2),
@@ -112,6 +117,7 @@ func (s *Server) Routes() http.Handler {
 		r.Use(s.requireAPIToken)
 		r.Get("/apps", s.apiListApps)
 		r.Post("/apps", s.apiCreateApp)
+		r.Post("/apps/upload", s.apiUploadApp)
 		r.Get("/apps/{name}", s.apiGetApp)
 		r.Post("/apps/{name}/redeploy", s.apiRedeployApp)
 		r.Post("/apps/{name}/restart", s.apiRestartApp)

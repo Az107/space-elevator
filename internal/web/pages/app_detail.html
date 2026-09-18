@@ -4,33 +4,37 @@
       <h1>{{ .App.Name }}</h1>
       <span class="lamp lamp-{{ .Status }}"><i></i>{{ .Status }}</span>
     </div>
-    <div class="row-actions">
-      {{ if or (eq .Status "running") (eq .Status "partial") }}
-      <form action="/apps/{{ .App.Name }}/stop" method="post" class="inline"
-            data-confirm="Stop {{ .App.Name }}?">
+    <div class="row-actions actions">
+      <div class="group">
+        {{ if or (eq .Status "running") (eq .Status "partial") }}
+        <form action="/apps/{{ .App.Name }}/stop" method="post"
+              data-confirm="Stop {{ .App.Name }}?" data-busy>
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <button type="submit" class="ghost">{{ template "i-stop" }}<span class="btn-label">Stop</span></button>
+        </form>
+        {{ else if and (eq .Status "stopped") (or (eq .App.Status "running") (eq .App.Status "stopped")) }}
+        <form action="/apps/{{ .App.Name }}/start" method="post" data-busy>
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <button type="submit" class="ghost">{{ template "i-play" }}<span class="btn-label">Start</span></button>
+        </form>
+        {{ end }}
+        <form action="/apps/{{ .App.Name }}/restart" method="post" data-busy>
+          <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+          <button type="submit" class="ghost">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
+        </form>
+      </div>
+      <span class="sep" aria-hidden="true"></span>
+      <form action="/apps/{{ .App.Name }}/redeploy" method="post"
+            data-confirm="Redeploy {{ .App.Name }} from its stored source?" data-busy>
         <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="ghost">Stop</button>
+        <button type="submit" class="ghost">{{ template "i-redeploy" }}<span class="btn-label">Redeploy</span></button>
       </form>
-      {{ else if and (eq .Status "stopped") (or (eq .App.Status "running") (eq .App.Status "stopped")) }}
-      <form action="/apps/{{ .App.Name }}/start" method="post" class="inline">
+      <button type="button" class="ghost" data-rename-open>{{ template "i-pencil" }}<span class="btn-label">Rename</span></button>
+      <span class="sep" aria-hidden="true"></span>
+      <form action="/apps/{{ .App.Name }}/remove" method="post"
+            data-confirm="Remove {{ .App.Name }}? This cannot be undone." data-confirm-variant="danger" data-busy>
         <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="ghost">Start</button>
-      </form>
-      {{ end }}
-      <form action="/apps/{{ .App.Name }}/restart" method="post" class="inline">
-        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="ghost">Restart</button>
-      </form>
-      <form action="/apps/{{ .App.Name }}/redeploy" method="post" class="inline"
-            data-confirm="Redeploy {{ .App.Name }} from its stored source?">
-        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="ghost">Redeploy</button>
-      </form>
-      <button type="button" class="ghost" data-rename-open>Rename</button>
-      <form action="/apps/{{ .App.Name }}/remove" method="post" class="inline"
-            data-confirm="Remove {{ .App.Name }}?">
-        <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="danger">Remove</button>
+        <button type="submit" class="danger">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
       </form>
     </div>
   </header>
@@ -46,7 +50,7 @@
       <p class="hint">Changes the display name and dashboard URL. Containers, routes, and attached domains are unaffected.</p>
       <div class="modal-actions">
         <button type="button" class="ghost" data-rename-close>Cancel</button>
-        <button type="submit">Rename</button>
+        <button type="submit">{{ template "i-pencil" }}<span class="btn-label">Rename</span></button>
       </div>
     </form>
   </dialog>
@@ -70,6 +74,16 @@
         {{ if .App.SourceRef }}<span class="mono src-ref">{{ .App.SourceRef }}</span>{{ end }}
       </span>
     </div>
+    <div>
+      <span class="k">Kind</span>
+      <span class="v"><span class="kind-badge kind-{{ .App.Kind }}">{{ .App.Kind }}</span></span>
+    </div>
+    {{ if eq .App.Kind "function" }}
+    <div>
+      <span class="k">Runtime</span>
+      <span class="v"><span class="mono">{{ .App.Runtime }} {{ .App.RuntimeVersion }}</span><span class="mono" title="entrypoint">{{ .App.Entrypoint }}</span></span>
+    </div>
+    {{ end }}
     <div>
       <span class="k">Build</span>
       <span class="v">{{ if eq .App.BuildMode "custom" }}<span class="mono">custom</span><span class="mono" title="{{ .App.BuildCommand }}">{{ .App.BuilderImage }} → {{ .App.RunCommand }}</span>{{ else }}<span class="muted">compose</span>{{ end }}</span>
@@ -117,7 +131,7 @@
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
           <textarea name="env" rows="4" spellcheck="false" aria-label="Environment variables">{{ .EnvText }}</textarea>
           <div>
-            <button type="submit" class="ghost">Save env</button>
+            <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Save env</span></button>
           </div>
         </form>
         <h2>Secrets</h2>
@@ -128,9 +142,9 @@
           <li>
             <span class="mono">{{ . }}</span>
             <form action="/apps/{{ $.App.Name }}/secrets/{{ . }}/delete" method="post" class="inline"
-                  data-confirm="Delete secret {{ . }}?">
+                  data-confirm="Delete secret {{ . }}?" data-confirm-variant="danger" data-busy>
               <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button type="submit" class="link danger" aria-label="Delete {{ . }}">delete</button>
+              <button type="submit" class="btn danger sm" aria-label="Delete {{ . }}">{{ template "i-trash" }}<span class="btn-label">Delete</span></button>
             </form>
           </li>
           {{ end }}
@@ -140,7 +154,7 @@
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
           <input type="text" name="key" placeholder="KEY" pattern="[A-Za-z_][A-Za-z0-9_]*" required>
           <input type="password" name="value" placeholder="value" autocomplete="off" required>
-          <button type="submit">Set</button>
+          <button type="submit">{{ template "i-key" }}<span class="btn-label">Set</span></button>
         </form>
       </section>
 
@@ -149,11 +163,15 @@
         <ul class="domains">
           {{ range .Domains }}
           <li>
-            <span>{{ . }}</span>
-            <form action="/apps/{{ $.App.Name }}/domains/{{ . }}/delete" method="post" class="inline">
-              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button type="submit" class="link danger" aria-label="Detach {{ . }}">detach</button>
-            </form>
+            <span class="mono">{{ . }}</span>
+            <span class="group">
+              <button type="button" class="copy-btn" data-copy="{{ . }}" data-tip="Copy domain" aria-label="Copy {{ . }}">{{ template "i-copy" }}</button>
+              <form action="/apps/{{ $.App.Name }}/domains/{{ . }}/delete" method="post" class="inline"
+                    data-confirm="Detach {{ . }}?" data-confirm-variant="danger" data-busy>
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <button type="submit" class="btn danger sm" aria-label="Detach {{ . }}">{{ template "i-trash" }}<span class="btn-label">Detach</span></button>
+              </form>
+            </span>
           </li>
           {{ else }}
           <li class="muted">No domains attached yet.</li>
@@ -162,7 +180,7 @@
         <form action="/apps/{{ .App.Name }}/domains" method="post" class="inline-form">
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
           <input type="text" name="domain" placeholder="app.example.com" required>
-          <button type="submit">Attach</button>
+          <button type="submit">{{ template "i-globe" }}<span class="btn-label">Attach</span></button>
         </form>
       </section>
 

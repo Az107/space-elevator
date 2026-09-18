@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/albertoruiz/space-elevator/internal/audit"
 )
 
 type authData struct {
@@ -49,9 +51,11 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.createUserAndLogin(r.Context(), r, w, "admin", pwd); err != nil {
+		s.recordAudit(r, audit.ActionSetup, "user", "", "admin", audit.OutcomeFailure, err.Error())
 		s.Renderer.Render(w, r, "setup.html", authData{PageData: PageData{Title: "Welcome"}, Error: err.Error()})
 		return
 	}
+	s.recordAudit(r, audit.ActionSetup, "user", "", "admin", audit.OutcomeSuccess, "initial admin account created")
 	http.Redirect(w, r, "/apps", http.StatusSeeOther)
 }
 
@@ -65,7 +69,19 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
+	username := r.FormValue("username")
+	password := r.FormValue("password")
 	if !s.logins.allow(ip) {
+		s.Audit.Record(r.Context(), audit.Event{
+			Actor:      audit.Actor{Type: audit.ActorAnonymous, Label: username},
+			Action:     audit.ActionLogin,
+			TargetType: "user",
+			TargetName: username,
+			Outcome:    audit.OutcomeFailure,
+			IP:         ip,
+			UserAgent:  r.UserAgent(),
+			Detail:     "rate limited: too many failed attempts",
+		})
 		w.WriteHeader(http.StatusTooManyRequests)
 		s.Renderer.Render(w, r, "login.html", authData{
 			PageData: PageData{Title: "Sign in"},
@@ -73,18 +89,18 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	username := r.FormValue("username")
-	password := r.FormValue("password")
 	u, err := s.Store.GetUserByUsername(r.Context(), username)
 	if err != nil {
 		// Burn the same bcrypt cost as the success path.
 		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		s.logins.fail(ip)
+		s.recordAudit(r, audit.ActionLogin, "user", "", username, audit.OutcomeFailure, "unknown username")
 		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg()})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		s.logins.fail(ip)
+		s.recordAudit(r, audit.ActionLogin, "user", u.ID, u.Username, audit.OutcomeFailure, "incorrect password")
 		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg()})
 		return
 	}
@@ -93,10 +109,21 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.Audit.Record(r.Context(), audit.Event{
+		Actor:      audit.Actor{Type: audit.ActorUser, ID: u.ID, Label: u.Username},
+		Action:     audit.ActionLogin,
+		TargetType: "user",
+		TargetID:   u.ID,
+		TargetName: u.Username,
+		Outcome:    audit.OutcomeSuccess,
+		IP:         ip,
+		UserAgent:  r.UserAgent(),
+	})
 	http.Redirect(w, r, "/apps", http.StatusSeeOther)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.recordAudit(r, audit.ActionLogout, "user", "", "", audit.OutcomeSuccess, "")
 	if c, _ := r.Cookie(sessionCookieNm); c != nil {
 		_ = s.Store.DeleteSession(r.Context(), c.Value)
 	}
@@ -105,6 +132,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	s.recordAudit(r, audit.ActionLogoutAll, "user", "", "", audit.OutcomeSuccess, "all sessions invalidated")
 	if sess := sessionFromCtx(r.Context()); sess != nil {
 		_ = s.Store.DeleteSessionsForUser(r.Context(), sess.UserID)
 	}

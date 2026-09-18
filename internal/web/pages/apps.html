@@ -5,24 +5,25 @@
       {{ if .Apps }}<p class="page-sub">{{ len .Apps }} deployed</p>{{ end }}
     </div>
     <div class="row-actions">
-      <a href="/apps/new" class="btn">Deploy from git</a>
+      <a href="/apps/new" class="btn">{{ template "i-plus" }}<span class="btn-label">New app</span></a>
     </div>
   </header>
 
-  <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Upload a tarball or zip to deploy">
+  <div id="dropzone" class="dropzone{{ if .Apps }} compact{{ end }}" role="button" tabindex="0" aria-label="Upload a tarball or zip to quick-deploy">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
-    <p class="dz-title">Drop a <code>.tar.gz</code> or <code>.zip</code> to deploy it</p>
+    <p class="dz-title">Quick deploy: drop a <code>.tar.gz</code> or <code>.zip</code></p>
     <p class="dz-hint">or click to choose a file</p>
     <input type="file" id="drop-input" hidden>
     <p class="dropzone-status" id="dropzone-status" role="status"></p>
   </div>
+  {{ if not .Apps }}<p class="hint quick-hint">Functions and build options live in <a href="/apps/new">New app</a>. Archives deploy as web apps here.</p>{{ end }}
 
   {{ if not .Apps }}
   <div class="empty-orbit">
     <div>
       <h2>Nothing in orbit yet</h2>
-      <p>Lift your first app: push a git repo with a compose file, or drop a tarball above.</p>
-      <a href="/apps/new" class="btn">Deploy from git</a>
+      <p>Lift your first app: deploy from git or an archive, or drop a tarball above.</p>
+      <a href="/apps/new" class="btn">{{ template "i-plus" }}<span class="btn-label">New app</span></a>
     </div>
     <svg class="shaft" viewBox="0 0 150 190" fill="none" aria-hidden="true">
       <ellipse cx="75" cy="38" rx="64" ry="16" stroke="var(--line)" stroke-dasharray="3 6" stroke-linecap="round"/>
@@ -33,8 +34,14 @@
     </svg>
   </div>
   {{ else }}
+  <div class="table-tools">
+    <label class="search">
+      {{ template "i-search" }}
+      <input type="search" id="apps-filter" placeholder="Filter by name, source, or domain" aria-label="Filter apps" autocomplete="off">
+    </label>
+  </div>
   <div class="table-wrap">
-    <table class="apps">
+    <table class="apps" id="apps-table">
       <thead>
         <tr><th>Name</th><th>Status</th><th>Source</th><th>Domains</th><th>Created</th><th></th></tr>
       </thead>
@@ -52,6 +59,7 @@
               {{ end }}
               <span class="mono">{{ .SourceType }}</span>
             </span>
+            {{ if ne .Kind "web" }}<span class="kind-badge kind-{{ .Kind }}">{{ .Kind }}</span>{{ end }}
             {{ if .SourceRef }}<span class="mono">{{ .SourceRef }}</span>{{ end }}
           </td>
           <td class="cell-domains" data-label="Domains">
@@ -60,32 +68,36 @@
           </td>
           <td class="cell-date" data-label="Created">{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
           <td class="row-actions">
-            {{ if eq .Status "running" }}
-            <form action="/apps/{{ .Name }}/stop" method="post" class="inline"
-                  data-confirm="Stop {{ .Name }}?">
-              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button class="link">Stop</button>
-            </form>
-            {{ else if eq .Status "stopped" }}
-            <form action="/apps/{{ .Name }}/start" method="post" class="inline">
-              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button class="link">Start</button>
-            </form>
-            {{ end }}
-            <form action="/apps/{{ .Name }}/restart" method="post" class="inline">
-              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button class="link">Restart</button>
-            </form>
-            <form action="/apps/{{ .Name }}/remove" method="post" class="inline"
-                  data-confirm="Remove {{ .Name }}?">
-              <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-              <button class="link danger">Remove</button>
-            </form>
+            <div class="actions">
+              {{ if eq .Status "running" }}
+              <form action="/apps/{{ .Name }}/stop" method="post"
+                    data-confirm="Stop {{ .Name }}?" data-busy>
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <button class="btn subtle sm">{{ template "i-stop" }}<span class="btn-label">Stop</span></button>
+              </form>
+              {{ else if eq .Status "stopped" }}
+              <form action="/apps/{{ .Name }}/start" method="post" data-busy>
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <button class="btn subtle sm">{{ template "i-play" }}<span class="btn-label">Start</span></button>
+              </form>
+              {{ end }}
+              <form action="/apps/{{ .Name }}/restart" method="post" data-busy>
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <button class="btn subtle sm">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
+              </form>
+              <span class="sep" aria-hidden="true"></span>
+              <form action="/apps/{{ .Name }}/remove" method="post"
+                    data-confirm="Remove {{ .Name }}? This cannot be undone." data-confirm-variant="danger" data-busy>
+                <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+                <button class="btn subtle danger sm">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
+              </form>
+            </div>
           </td>
         </tr>
         {{ end }}
       </tbody>
     </table>
   </div>
+  <p class="apps-no-match" id="apps-no-match" hidden>No apps match that filter.</p>
   {{ end }}
 </section>

@@ -37,6 +37,7 @@ Endpoints:
 | GET | `/apps` | List apps (stored status, domains, secret keys) |
 | GET | `/apps/{name}` | App detail incl. live runtime status + services |
 | POST | `/apps` | Deploy from git (202; see below) |
+| POST | `/apps/upload` | Deploy an uploaded archive, multipart (202; see below) |
 | POST | `/apps/{name}/redeploy` | Rebuild+recreate from stored source (async) |
 | POST | `/apps/{name}/restart` | Restart containers (env changes do NOT apply) |
 | POST | `/apps/{name}/start` | Start stopped containers |
@@ -60,6 +61,7 @@ POST /api/v1/apps
   "ref": "main",
   "env": {"NODE_ENV": "production"},
   "secrets": {"API_TOKEN": "hunter2"},
+  "kind": "web",
   "build": {
     "image": "node:20-bookworm",
     "build_command": "npm ci && npm run build",
@@ -70,14 +72,65 @@ POST /api/v1/apps
 → 202 {"name":"my-api","status":"pending"}
 ```
 
+- `kind` is `web` (default), `function`, or `custom`. `custom` means
+  bring-your-own-container (a compose/Dockerfile or the `build` block);
+  a repo that ships its own compose file always wins over `build`.
 - `build` is optional: repos that ship `compose.yml` deploy as-is.
   Setting `build` switches to advanced deploy (synthesized single-stage
-  Dockerfile); a repo that ships its own compose file wins over it.
+  Dockerfile).
 - `name` may be omitted if it can be derived from the repo URL.
 - Deploying over an existing name is rejected (`409`); use
   `redeploy` to refresh, or `DELETE` first.
 - Invalid env/secret key names → `400` (keys must match
   `[A-Za-z_][A-Za-z0-9_]*`).
+
+### Deploying a function from git
+
+```
+POST /api/v1/apps
+{
+  "name": "resize-image",
+  "url": "https://github.com/you/functions.git",
+  "kind": "function",
+  "runtime": "python",
+  "runtime_version": "3.12",
+  "entrypoint": "handler.py:handler",
+  "scale_to_zero": false,
+  "idle_timeout": 0
+}
+→ 202 {"name":"resize-image","status":"pending"}
+```
+
+`runtime` is `python` or `node`; `runtime_version` is the base image tag
+(default `3.12` / `20`); `entrypoint` is `file:handler` (default
+`handler.py:handler` / `index.js:handler`). The platform generates an
+HTTP adapter that calls the handler with an API Gateway-style event and
+serves its return value. `scale_to_zero`/`idle_timeout` are stored for a
+future activator and are currently inert.
+
+See [functions.md](./functions.md) for the handler contract and examples.
+
+## Deploying an archive
+
+```
+POST /api/v1/apps/upload        # multipart/form-data
+  tarball=<file>                # required; .tar.gz / .tgz / .zip
+  kind=function                 # web (default) | function | custom
+  name=resize-image
+  language=python
+  runtime_version=3.12
+  entrypoint=handler.py:handler
+  env=API_KEY=...               # KEY=VALUE lines, one per newline
+  secrets=TOKEN=...
+→ 202 {"name":"resize-image","status":"pending"}
+```
+
+- `kind=web` auto-detects a static site or a Dockerfile.
+- `kind=custom` requires a Dockerfile in the archive.
+- `kind=function` requires `language` (and optional `runtime_version` /
+  `entrypoint`).
+- As with all deploys, poll `GET /apps/{name}` until `status` leaves
+  `pending`.
 
 ## Renaming an app
 

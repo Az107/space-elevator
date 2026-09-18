@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
@@ -125,6 +126,19 @@ func (s *Server) restartAppContainers(ctx context.Context, a *store.App) error {
 	return s.Runtime.Restart(ctx, composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug})
 }
 
+// syncAppRoute regenerates (or removes) the app's Traefik dynamic file
+// from its current container state. Without this, stopping an app leaves
+// a stale route to a dead backend (Traefik 502) and starting one whose
+// route was previously removed never restores it (Traefik 404).
+func (s *Server) syncAppRoute(ctx context.Context, a *store.App) {
+	if s.Deployer == nil {
+		return
+	}
+	if err := s.Deployer.SyncRoute(ctx, a); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: traefik route for %s: %v\n", a.Name, err)
+	}
+}
+
 func (s *Server) handleAppRestart(w http.ResponseWriter, r *http.Request) {
 	a, err := s.Store.GetAppByName(r.Context(), chi.URLParam(r, "name"))
 	if err != nil {
@@ -132,9 +146,12 @@ func (s *Server) handleAppRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.restartAppContainers(r.Context(), a); err != nil {
+		s.recordAudit(r, audit.ActionAppRestart, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppRestart, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	s.redirectOK(w, r, "/apps/"+a.Name, "App restarted.")
 }
 
@@ -144,10 +161,13 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Runtime.Start(r.Context(), composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug}); err != nil {
+		s.recordAudit(r, audit.ActionAppStart, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
 	_ = s.Store.UpdateAppStatus(r.Context(), a.ID, "running")
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppStart, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	s.redirectOK(w, r, "/apps/"+a.Name, "App started.")
 }
 
@@ -157,10 +177,13 @@ func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Runtime.Stop(r.Context(), composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug}); err != nil {
+		s.recordAudit(r, audit.ActionAppStop, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
 	_ = s.Store.UpdateAppStatus(r.Context(), a.ID, "stopped")
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppStop, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	s.redirectOK(w, r, "/apps/"+a.Name, "App stopped.")
 }
 
@@ -193,6 +216,7 @@ func (s *Server) handleAppRename(w http.ResponseWriter, r *http.Request) {
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionAppRename, "app", a.ID, newName, audit.OutcomeSuccess, "was "+a.Name)
 	s.redirectOK(w, r, "/apps/"+newName, fmt.Sprintf("Renamed to %s.", newName))
 }
 
@@ -227,9 +251,11 @@ func (s *Server) handleAppRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deleteApp(r.Context(), a); err != nil {
+		s.recordAudit(r, audit.ActionAppRemove, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionAppRemove, "app", a.ID, a.Name, audit.OutcomeSuccess, "source "+a.SourceType)
 	s.redirectOK(w, r, "/apps", fmt.Sprintf("App %s removed.", a.Name))
 }
 func (s *Server) handleAppRedeploy(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +282,8 @@ func (s *Server) handleAppRedeploy(w http.ResponseWriter, r *http.Request) {
 	// redirected to always starts the build progress view; Redeploy
 	// re-asserts it inside the pipeline.
 	_ = s.Store.UpdateAppStatusErr(r.Context(), a.ID, "pending", "")
+	s.recordAudit(r, audit.ActionAppRedeploy, "app", a.ID, a.Name, audit.OutcomeSuccess, "requested")
+	base := s.backgroundAuditCtx(r)
 	// The whole pipeline (synth regen, teardown, deploy, route rewrite,
 	// status updates) is shared with the CLI and API via the deployer.
 	// A sink-wired copy streams progress into the build panel.
@@ -265,7 +293,7 @@ func (s *Server) handleAppRedeploy(w http.ResponseWriter, r *http.Request) {
 				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal redeploy panic: %v", p))
 			}
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := context.WithTimeout(base, 30*time.Minute)
 		defer cancel()
 		d, sink := s.deploySinkFor(app.Slug)
 		if err := d.Redeploy(ctx, app); err != nil {
@@ -298,6 +326,7 @@ func (s *Server) handleAppEnvSave(w http.ResponseWriter, r *http.Request) {
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionEnvUpdate, "app", a.ID, a.Name, audit.OutcomeSuccess, fmt.Sprintf("%d keys", len(env)))
 	s.redirectOK(w, r, "/apps/"+a.Name, "Environment saved; applies on next redeploy.")
 }
 
@@ -322,6 +351,7 @@ func (s *Server) handleAppSecretSet(w http.ResponseWriter, r *http.Request) {
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionSecretSet, "app", a.ID, a.Name, audit.OutcomeSuccess, "key "+key)
 	s.redirectOK(w, r, "/apps/"+a.Name, fmt.Sprintf("Secret %s set.", key))
 }
 
@@ -339,6 +369,7 @@ func (s *Server) handleAppSecretDelete(w http.ResponseWriter, r *http.Request) {
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionSecretDelete, "app", a.ID, a.Name, audit.OutcomeSuccess, "key "+key)
 	s.redirectOK(w, r, "/apps/"+a.Name, fmt.Sprintf("Secret %s deleted.", key))
 }
 

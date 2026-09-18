@@ -1,61 +1,149 @@
 <section class="narrow">
   <header class="page-head">
     <div>
-      <h1>Deploy from git</h1>
-      <p class="page-sub">Compose stack or Dockerfile, built and routed automatically.</p>
+      <h1>New app</h1>
+      <p class="page-sub">Deploy a web app, a function, or your own container from git or an archive.</p>
     </div>
   </header>
 
-  <form method="post" action="/apps/new" class="form">
+  {{ if .Error }}<div class="flash" role="alert">{{ .Error }}</div>{{ end }}
+
+  <form method="post" action="/apps/new" enctype="multipart/form-data" class="form wizard" id="deploy-wizard">
     <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-    <label>Git URL
-      <input type="url" name="url" placeholder="https://github.com/you/repo.git" required>
-      <span class="hint">Private repos need a token — add one under Settings.</span>
-    </label>
-    <div class="form-grid-2">
-      <label>Name
-        <input type="text" name="name" placeholder="derived from repo">
+
+    <fieldset class="wiz-step">
+      <legend>What are you deploying?</legend>
+      <div class="choice-grid">
+        <label class="choice">
+          <input type="radio" name="kind" value="web" checked>
+          <span class="choice-body">
+            <span class="choice-title">Web app</span>
+            <span class="choice-desc">A compose stack, Dockerfile, or static site served over HTTP.</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="kind" value="function">
+          <span class="choice-body">
+            <span class="choice-title">Function</span>
+            <span class="choice-desc">A Python or Node handler invoked per request (Lambda-style).</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="kind" value="custom">
+          <span class="choice-body">
+            <span class="choice-title">Container</span>
+            <span class="choice-desc">Bring your own Dockerfile or advanced build settings.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="wiz-step">
+      <legend>Where is the code?</legend>
+      <div class="choice-grid">
+        <label class="choice">
+          <input type="radio" name="source" value="git" checked>
+          <span class="choice-body">
+            <span class="choice-title">Git repository</span>
+            <span class="choice-desc">Clone and build on every deploy.</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="source" value="upload">
+          <span class="choice-body">
+            <span class="choice-title">Upload archive</span>
+            <span class="choice-desc">A <code>.tar.gz</code> or <code>.zip</code> of the source.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-source="git">
+      <legend>Repository</legend>
+      <label>Git URL
+        <input type="url" name="url" placeholder="https://github.com/you/repo.git">
+        <span class="hint">Private repos need a token — add one under Settings.</span>
       </label>
       <label>Ref
         <input type="text" name="ref" value="main">
       </label>
-    </div>
-    <div class="form-grid-2">
-      <label>Environment variables
-        <textarea name="env" rows="4" placeholder="NODE_ENV=production&#10;PORT=3000" spellcheck="false"></textarea>
-        <span class="hint">KEY=VALUE per line. Also available to the image build (Vite/Next env inlining). Editable later on the app page; secrets are runtime-only.</span>
-      </label>
-      <label>Secrets
-        <textarea name="secrets" rows="4" placeholder="API_TOKEN=hunter2&#10;DB_PASSWORD=…" spellcheck="false" autocomplete="off"></textarea>
-        <span class="hint">Same format, but values are never shown again. Secrets override env vars.</span>
-      </label>
-    </div>
-    <details class="advanced">
-      <summary>Advanced — not containerized? Build it here</summary>
-      <p class="hint">For repos without a compose.yml or Dockerfile. The platform generates a Dockerfile from a base image plus your build &amp; run commands (single stage; build and run in the same image).</p>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-source="upload">
+      <legend>Archive</legend>
+      <div id="wiz-dropzone" class="dropzone" role="button" tabindex="0" aria-label="Upload a tarball or zip">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg>
+        <p class="dz-title">Drop a <code>.tar.gz</code> or <code>.zip</code></p>
+        <p class="dz-hint" id="wiz-drop-hint">or click to choose a file</p>
+        <input type="file" name="tarball" id="wiz-drop-input" hidden>
+      </div>
+      <p class="hint" data-when-kind="custom">Container deploys require a Dockerfile in the archive.</p>
+      <p class="hint" data-when-kind="function">The archive should contain your handler file (and optional <code>requirements.txt</code> / <code>package.json</code>).</p>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-kind="function">
+      <legend>Function</legend>
       <div class="form-grid-2">
-        <label>Builder image
-          <input type="text" name="image" placeholder="node:20-bookworm">
-          <span class="hint">Any image with /bin/sh. Required for advanced deploys.</span>
+        <label>Language
+          <select name="language">
+            <option value="python">Python</option>
+            <option value="node">Node.js</option>
+          </select>
         </label>
-        <label>Listen port
-          <input type="number" name="port" min="1" max="65535" placeholder="8080">
-          <span class="hint">Port your app serves on (default 8080).</span>
+        <label>Runtime version
+          <input type="text" name="runtime_version" placeholder="3.12 or 20">
+          <span class="hint">Plain tag, e.g. <code>3.12</code> / <code>20</code>. Defaults per language.</span>
         </label>
       </div>
-      <label>Build command
-        <input type="text" name="build_cmd" placeholder="npm ci && npm run build">
-        <span class="hint">Optional — skip for interpreted apps that run from source.</span>
+      <label>Entrypoint
+        <input type="text" name="entrypoint" placeholder="handler.py:handler">
+        <span class="hint">Convention: <code>handler.py:handler</code> (Python) or <code>index.js:handler</code> (Node). Override if your file or export differs.</span>
       </label>
-      <label>Run command
-        <input type="text" name="run_cmd" placeholder="npm start">
-        <span class="hint">The container's CMD, run via /bin/sh. Required for advanced deploys.</span>
+      <p class="hint">Handlers receive an API Gateway-style event and can return <code>{ statusCode, headers, body }</code> or any JSON value. Containers run always-on for now; keep handlers stateless.</p>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-kind="web custom" data-when-source="git">
+      <legend>Build settings <span class="opt">optional</span></legend>
+      <details class="advanced">
+        <summary>Not containerized? Build it here</summary>
+        <p class="hint">For repos without a compose.yml or Dockerfile. The platform generates a Dockerfile from a base image plus your build &amp; run commands (single stage; build and run in the same image).</p>
+        <div class="form-grid-2">
+          <label>Builder image
+            <input type="text" name="image" placeholder="node:20-bookworm">
+          </label>
+          <label>Listen port
+            <input type="number" name="port" min="1" max="65535" placeholder="8080">
+          </label>
+        </div>
+        <label>Build command
+          <input type="text" name="build_cmd" placeholder="npm ci && npm run build">
+        </label>
+        <label>Run command
+          <input type="text" name="run_cmd" placeholder="npm start">
+        </label>
+      </details>
+    </fieldset>
+
+    <fieldset class="wiz-step">
+      <legend>Details</legend>
+      <label>Name
+        <input type="text" name="name" placeholder="derived from the repo or auto-generated">
+        <span class="hint">Optional. Lowercase letters, digits, and hyphens (1-63 chars).</span>
       </label>
-    </details>
+      <div class="form-grid-2">
+        <label>Environment variables
+          <textarea name="env" rows="4" placeholder="NODE_ENV=production&#10;PORT=3000" spellcheck="false"></textarea>
+          <span class="hint">KEY=VALUE per line; applies at build and runtime. Editable later.</span>
+        </label>
+        <label>Secrets
+          <textarea name="secrets" rows="4" placeholder="API_TOKEN=hunter2" spellcheck="false" autocomplete="off"></textarea>
+          <span class="hint">KEY=VALUE per line; never shown again. Secrets override env vars.</span>
+        </label>
+      </div>
+    </fieldset>
+
     <div>
-      <button type="submit">Deploy</button>
+      <button type="submit" id="deploy-submit">{{ template "i-upload" }}<span class="btn-label">Deploy</span></button>
     </div>
   </form>
-
-  <p class="alt-note">Prefer a tarball? <a href="/apps">Drop it on the apps page.</a></p>
 </section>

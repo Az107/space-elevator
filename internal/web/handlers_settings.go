@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/store"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
 )
@@ -106,19 +107,22 @@ func (s *Server) handleSettingsTokens(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, err.Error())
 		return
 	}
-	_, raw, err := s.Store.MintAPIToken(r.Context(), name, expires)
+	tok, raw, err := s.Store.MintAPIToken(r.Context(), name, expires)
 	if err != nil {
 		s.renderSettings(w, r, "Could not create token: "+err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionTokenCreate, "token", tok.ID, tok.Name, audit.OutcomeSuccess, "prefix "+tok.Prefix)
 	s.renderSettingsNewToken(w, r, raw, name)
 }
 
 func (s *Server) handleSettingsTokenDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.DeleteAPIToken(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := s.Store.DeleteAPIToken(r.Context(), id); err != nil {
 		s.redirectErr(w, r, "/settings", err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionTokenRevoke, "token", id, "", audit.OutcomeSuccess, "")
 	s.redirectOK(w, r, "/settings", "API token revoked.")
 }
 
@@ -160,5 +164,6 @@ func (s *Server) handleSettingsCreds(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionCredentialSet, "git_credential", c.ID, host, audit.OutcomeSuccess, "username "+username)
 	s.redirectOK(w, r, "/settings", "Git credential saved.")
 }

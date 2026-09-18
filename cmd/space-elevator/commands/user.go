@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/config"
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
@@ -47,7 +48,7 @@ func runUserResetPassword(cmd *cobra.Command, _ []string) error {
 	}
 	defer st.Close()
 
-	ctx := cmd.Context()
+	ctx, au := cliAudit(cmd.Context(), st)
 	u, err := st.GetUserByUsername(ctx, userResetUsername)
 	if err != nil {
 		// Lockout helper: the username may have been changed in the
@@ -80,6 +81,14 @@ func runUserResetPassword(cmd *cobra.Command, _ []string) error {
 	if err := st.DeleteSessionsForUser(ctx, u.ID); err != nil {
 		return err
 	}
+	au.Record(ctx, audit.Event{
+		Action:     audit.ActionPasswordChange,
+		TargetType: "user",
+		TargetID:   u.ID,
+		TargetName: u.Username,
+		Outcome:    audit.OutcomeSuccess,
+		Detail:     "reset via local CLI; all sessions signed out",
+	})
 	fmt.Println("OK: password updated; all dashboard sessions were signed out.")
 	return nil
 }

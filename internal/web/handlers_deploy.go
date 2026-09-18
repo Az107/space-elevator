@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/builder"
-	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/deployer"
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
@@ -43,14 +43,55 @@ func validAppName(name string) bool {
 }
 
 func (s *Server) handleDeployForm(w http.ResponseWriter, r *http.Request) {
-	s.Renderer.Render(w, r, "deploy.html", deployFormData{PageData: pageCtx(r, "Deploy")})
+	s.Renderer.Render(w, r, "deploy.html", deployFormData{PageData: pageCtx(r, "New app")})
 }
 
+// handleDeploySubmit is the unified wizard endpoint. It dispatches on
+// the "source" field: git deploys synchronously create a row and kick
+// off the clone pipeline; upload deploys extract an archive and do the
+// same, sharing CreateUpload with the dropzone and CLI/API.
 func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		s.Renderer.Render(w, r, "deploy.html", deployFormData{
+			PageData: pageCtx(r, "New app"),
+			Error:    "Could not parse form: " + err.Error(),
+		})
 		return
 	}
+	fail := func(msg string) {
+		s.Renderer.Render(w, r, "deploy.html", deployFormData{
+			PageData: pageCtx(r, "New app"),
+			Error:    msg,
+		})
+	}
+
+	source := r.FormValue("source")
+	if source == "" {
+		source = "git"
+	}
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	if kind == "" {
+		kind = store.KindWeb
+	}
+	switch kind {
+	case store.KindWeb, store.KindFunction, store.KindCustom:
+	default:
+		fail(fmt.Sprintf("Unknown app kind %q.", kind))
+		return
+	}
+
+	if source == "upload" {
+		app, err := s.createUploadFromRequest(r)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		s.recordAudit(r, audit.ActionAppUpload, "app", app.ID, app.Name, audit.OutcomeSuccess, "archive "+app.SourceRef)
+		s.startUploadDeploy(s.backgroundAuditCtx(r), app)
+		http.Redirect(w, r, "/apps/"+app.Name, http.StatusSeeOther)
+		return
+	}
+
 	repoURL := r.FormValue("url")
 	name := strings.ToLower(strings.TrimSpace(r.FormValue("name")))
 	ref := r.FormValue("ref")
@@ -60,6 +101,19 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 	env, envBad := store.ParseKVLines(r.FormValue("env"))
 	secrets, secretBad := store.ParseKVLines(r.FormValue("secrets"))
 
+	// Function fields (only meaningful for kind=function).
+	fb := builder.FunctionBuild{
+		Language:   r.FormValue("language"),
+		Version:    r.FormValue("runtime_version"),
+		Entrypoint: r.FormValue("entrypoint"),
+	}
+	if kind == store.KindFunction {
+		if err := fb.Validate(); err != nil {
+			fail("Function: " + err.Error() + ".")
+			return
+		}
+	}
+
 	// Advanced section: a repo that isn't containerized gets a
 	// synthesized single-stage Dockerfile (builder image + build/run
 	// commands). Any of image/run_cmd switches to custom build mode.
@@ -67,7 +121,7 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 	buildCmd := strings.TrimSpace(r.FormValue("build_cmd"))
 	runCmd := strings.TrimSpace(r.FormValue("run_cmd"))
 	port, portErr := builder.ParsePort(r.FormValue("port"))
-	custom := builderImage != "" || runCmd != "" || buildCmd != ""
+	custom := kind != store.KindFunction && (builderImage != "" || runCmd != "" || buildCmd != "")
 	if custom {
 		cb := builder.CustomBuild{
 			BuilderImage: builderImage,
@@ -76,10 +130,7 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 			ListenPort:   port,
 		}
 		if err := cb.Validate(); err != nil {
-			s.Renderer.Render(w, r, "deploy.html", deployFormData{
-				PageData: pageCtx(r, "Deploy"),
-				Error:    "Advanced deploy: " + err.Error() + ".",
-			})
+			fail("Advanced deploy: " + err.Error() + ".")
 			return
 		}
 	}
@@ -89,21 +140,12 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 		portErr = errors.New("builder image or run command required when setting a port")
 	}
 	if portErr != nil {
-		s.Renderer.Render(w, r, "deploy.html", deployFormData{
-			PageData: pageCtx(r, "Deploy"),
-			Error:    "Advanced deploy: " + portErr.Error() + ".",
-		})
+		fail("Advanced deploy: " + portErr.Error() + ".")
 		return
 	}
 
 	if name == "" {
 		name = strings.ToLower(nameFromURL(repoURL))
-	}
-	fail := func(msg string) {
-		s.Renderer.Render(w, r, "deploy.html", deployFormData{
-			PageData: pageCtx(r, "Deploy"),
-			Error:    msg,
-		})
 	}
 	if repoURL == "" || name == "" {
 		fail("URL and name required.")
@@ -133,24 +175,34 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 		buildMode = store.BuildModeCustom
 	}
 	app := &store.App{
-		ID:           appID,
-		Name:         name,
-		Slug:         name,
-		SourceType:   "git",
-		SourceRef:    repoURL,
-		GitRef:       ref,
-		Env:          env,
-		BuildMode:    buildMode,
-		BuilderImage: builderImage,
-		BuildCommand: buildCmd,
-		RunCommand:   runCmd,
-		ListenPort:   port,
-		Status:       "pending",
+		ID:             appID,
+		Name:           name,
+		Slug:           name,
+		SourceType:     "git",
+		SourceRef:      repoURL,
+		GitRef:         ref,
+		Env:            env,
+		BuildMode:      buildMode,
+		BuilderImage:   builderImage,
+		BuildCommand:   buildCmd,
+		RunCommand:     runCmd,
+		ListenPort:     port,
+		Kind:           kind,
+		Runtime:        fb.Language,
+		RuntimeVersion: fb.Version,
+		Entrypoint:     fb.Entrypoint,
+		ScaleToZero:    r.FormValue("scale_to_zero") != "",
+		IdleTimeout:    atoiDefault(r.FormValue("idle_timeout"), 0),
+		Status:         "pending",
+	}
+	if kind == store.KindFunction {
+		app.ListenPort = builder.DefaultFunctionPort
 	}
 	if err := s.Store.CreateApp(r.Context(), app); err != nil {
 		fail(fmt.Sprintf("Could not create app %q: %v.", name, err))
 		return
 	}
+	s.recordAudit(r, audit.ActionAppCreate, "app", app.ID, app.Name, audit.OutcomeSuccess, "git "+repoURL+" ref "+ref)
 
 	var buildReq *builder.CustomBuild
 	if custom {
@@ -161,15 +213,124 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 			ListenPort:   port,
 		}
 	}
-	go s.deployAsync(deployer.GitRequest{
-		Name:    name,
-		RepoURL: repoURL,
-		Ref:     ref,
-		Env:     env,
-		Secrets: secrets,
-		Build:   buildReq,
+	go s.deployAsync(s.backgroundAuditCtx(r), deployer.GitRequest{
+		Name:           name,
+		RepoURL:        repoURL,
+		Ref:            ref,
+		Env:            env,
+		Secrets:        secrets,
+		Build:          buildReq,
+		Kind:           kind,
+		Runtime:        fb.Language,
+		RuntimeVersion: fb.Version,
+		Entrypoint:     fb.Entrypoint,
+		ScaleToZero:    app.ScaleToZero,
+		IdleTimeout:    app.IdleTimeout,
 	})
 	http.Redirect(w, r, "/apps/"+name, http.StatusSeeOther)
+}
+
+// createUploadFromRequest extracts the multipart archive and common
+// fields from an upload request (wizard or dropzone), creates the
+// pending app row, and returns it. It does not start the deploy.
+func (s *Server) createUploadFromRequest(r *http.Request) (*store.App, error) {
+	f, header, err := r.FormFile("tarball")
+	if err != nil {
+		return nil, errors.New("missing 'tarball' file field — drag a single .tar.gz / .zip file, not a folder")
+	}
+	defer f.Close()
+	if header.Size == 0 {
+		return nil, errors.New("uploaded file is empty")
+	}
+
+	suffix := ""
+	lower := strings.ToLower(header.Filename)
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		suffix = ".zip"
+	case strings.HasSuffix(lower, ".tar.gz"):
+		suffix = ".tar.gz"
+	case strings.HasSuffix(lower, ".tgz"):
+		suffix = ".tgz"
+	}
+	tmp, err := os.CreateTemp("", "se-upload-*"+suffix)
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, f); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+
+	env, envBad := store.ParseKVLines(r.FormValue("env"))
+	secrets, secretBad := store.ParseKVLines(r.FormValue("secrets"))
+	if len(envBad) > 0 || len(secretBad) > 0 {
+		bad := append(append([]string{}, envBad...), secretBad...)
+		return nil, fmt.Errorf("invalid environment/secret line(s) %q: use KEY=VALUE per line; keys must match [A-Za-z_][A-Za-z0-9_]*.", bad)
+	}
+
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	if kind == "" {
+		kind = store.KindWeb
+	}
+	switch kind {
+	case store.KindWeb, store.KindFunction, store.KindCustom:
+	default:
+		return nil, fmt.Errorf("unknown kind %q", kind)
+	}
+	fb := builder.FunctionBuild{
+		Language:   r.FormValue("language"),
+		Version:    r.FormValue("runtime_version"),
+		Entrypoint: r.FormValue("entrypoint"),
+	}
+	if kind == store.KindFunction {
+		if err := fb.Validate(); err != nil {
+			return nil, fmt.Errorf("function: %w", err)
+		}
+	}
+
+	return s.Deployer.CreateUpload(r.Context(), deployer.UploadRequest{
+		Name:           strings.ToLower(strings.TrimSpace(r.FormValue("name"))),
+		Kind:           kind,
+		Runtime:        fb.Language,
+		RuntimeVersion: fb.Version,
+		Entrypoint:     fb.Entrypoint,
+		SourceRef:      header.Filename,
+		Env:            env,
+		Secrets:        secrets,
+		ArchivePath:    tmpPath,
+		ScaleToZero:    r.FormValue("scale_to_zero") != "",
+		IdleTimeout:    atoiDefault(r.FormValue("idle_timeout"), 0),
+	})
+}
+
+// startUploadDeploy runs the shared redeploy pipeline for a freshly
+// created upload app in the background, streaming progress into the
+// app's build-log sink.
+func (s *Server) startUploadDeploy(base context.Context, app *store.App) {
+	d, sink := s.deploySinkFor(app.Slug)
+	go func() {
+		s.deploySem <- struct{}{}
+		defer func() { <-s.deploySem }()
+		defer func() {
+			if p := recover(); p != nil {
+				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal deploy panic: %v", p))
+				sink.Append(fmt.Sprintf("✕ internal deploy panic: %v", p))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(base, deployTimeout)
+		defer cancel()
+		if err := d.Redeploy(ctx, app); err != nil {
+			sink.Append("✕ deploy failed: " + err.Error())
+			return
+		}
+		sink.Append("✓ deploy complete")
+	}()
 }
 
 // deploySinkFor returns a per-deploy copy of the deployer whose Log,
@@ -191,7 +352,7 @@ func (s *Server) deploySinkFor(name string) (*deployer.Deployer, *buildLog) {
 // deployAsync runs the shared deploy pipeline with bounded concurrency,
 // streaming progress and image-build output into the app's build log;
 // every failure is recorded on the app row by the deployer.
-func (s *Server) deployAsync(req deployer.GitRequest) {
+func (s *Server) deployAsync(base context.Context, req deployer.GitRequest) {
 	s.deploySem <- struct{}{}
 	defer func() { <-s.deploySem }()
 
@@ -206,7 +367,7 @@ func (s *Server) deployAsync(req deployer.GitRequest) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
+	ctx, cancel := context.WithTimeout(base, deployTimeout)
 	defer cancel()
 	if _, err := d.DeployGit(ctx, req); err != nil {
 		sink.Append("✕ deploy failed: " + err.Error())
@@ -256,140 +417,30 @@ func nameFromURL(rawURL string) string {
 	return p
 }
 
-// handleDrop handles a multipart tarball upload from the drag-drop UI.
+// handleDrop is the zero-config dropzone endpoint: upload an archive and
+// deploy it as a web app (static assets or a Dockerfile). It shares the
+// wizard's creation path and returns JSON so the fetch()-driven dropzone
+// can show progress and redirect.
 func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		jsonError(w, http.StatusBadRequest, "could not parse upload (is it larger than the size limit?): "+err.Error())
 		return
 	}
-	f, header, err := r.FormFile("tarball")
+	app, err := s.createUploadFromRequest(r)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "missing 'tarball' file field — drag a single .tar.gz / .zip file, not a folder")
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	defer f.Close()
-
-	if header.Size == 0 {
-		jsonError(w, http.StatusBadRequest, "uploaded file is empty")
-		return
-	}
-
-	id := uuid.NewString()
-	tarPath := filepath.Join(s.Cfg.AppsRoot, "drops", id+".tar.gz")
-	destDir := filepath.Join(s.Cfg.AppsRoot, "drops", id)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	out, err := os.Create(tarPath)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if _, err := io.Copy(out, f); err != nil {
-		out.Close()
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	out.Close()
-
-	kind, err := extractAndDetect(tarPath, destDir)
-	if err != nil {
-		// Clean up the partial extraction so we don't leave junk on disk
-		// when the upload turns out to be bad.
-		_ = os.RemoveAll(destDir)
-		_ = os.Remove(tarPath)
-		jsonError(w, http.StatusBadRequest, fmt.Sprintf("could not extract %q: %v", header.Filename, err))
-		return
-	}
-	// Tarball is no longer needed — the extracted source dir is the input
-	// for build and redeploy. Drop it now so it doesn't accumulate on
-	// disk or sit there waiting to be exfiltrated via an arbitrary-read
-	// path in the future.
-	_ = os.Remove(tarPath)
-
-	name := "drop-" + id[:8]
-
-	composeBytes, err := syntheticCompose(destDir, kind)
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if kind == "static" {
-		// baseHref is the URL prefix the app will be served at. If the
-		// user attaches a custom domain, the app is served at the
-		// subdomain root and base href should be "/". Otherwise the app
-		// lives under the auto path-prefix route and base href should
-		// mirror that, including the synth compose's "-web" service
-		// suffix (Traefik keys the stripPrefix and router by that).
-		baseHref := "/"
-		if s.Cfg.AppPathPrefix != "" {
-			prefix := strings.TrimRight(s.Cfg.AppPathPrefix, "/")
-			baseHref = prefix + "/" + name + "-web/"
-		}
-		root, err := builder.WriteStaticFiles(destDir, baseHref)
-		if err != nil {
-			jsonError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if root != "" && root != "." {
-			fmt.Fprintf(os.Stderr, "info: detected nested doc root %q for %s\n", root, header.Filename)
-		}
-	}
-	app := &store.App{
-		ID:          id,
-		Name:        name,
-		Slug:        name,
-		SourceType:  "drop",
-		SourceRef:   header.Filename,
-		GitRef:      "",
-		DropKind:    kind,
-		ComposeYAML: composeBytes,
-		Env:         map[string]string{},
-		Status:      "pending",
-	}
-	if err := s.Store.CreateApp(r.Context(), app); err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	spec, err := composer.Parse([]byte(composeBytes))
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	d, sink := s.deploySinkFor(name)
-	go func() {
-		s.deploySem <- struct{}{}
-		defer func() { <-s.deploySem }()
-		ctx, cancel := context.WithTimeout(context.Background(), deployTimeout)
-		defer cancel()
-		env, err := s.Store.LoadRuntimeEnv(ctx, id, app.Env)
-		if err != nil {
-			_ = s.Store.UpdateAppStatusErr(ctx, id, "error", "load env: "+err.Error())
-			sink.Append("✕ deploy failed: load env: " + err.Error())
-			return
-		}
-		meta := composer.AppMeta{
-			ID:         id,
-			Name:       app.Slug,
-			Env:        env,
-			Label:      app.Slug,
-			BuildEnv:   app.Env,
-			StaticDrop: kind == "static",
-		}
-		sink.Stage("deploy")
-		sink.appendf("Deploying %s...", name)
-		if err := d.Runtime.Deploy(ctx, meta, spec, destDir); err != nil {
-			_ = s.Store.UpdateAppStatusErr(ctx, id, "error", "deploy failed: "+err.Error())
-			sink.Append("✕ deploy failed: " + err.Error())
-			return
-		}
-		_ = s.Store.UpdateAppStatusErr(ctx, id, "running", "")
-		sink.Stage("route")
-		sink.Append("✓ deploy complete")
-	}()
-
+	s.recordAudit(r, audit.ActionAppUpload, "app", app.ID, app.Name, audit.OutcomeSuccess, "archive "+app.SourceRef)
+	s.startUploadDeploy(s.backgroundAuditCtx(r), app)
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"name":%q}`, name)
+	fmt.Fprintf(w, `{"name":%q}`, app.Name)
+}
+
+func atoiDefault(s string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
 }

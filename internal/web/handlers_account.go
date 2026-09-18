@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
 
@@ -38,6 +39,7 @@ func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
+		s.recordAudit(r, audit.ActionUsernameChange, "user", u.ID, u.Username, audit.OutcomeFailure, "current password incorrect")
 		s.renderSettings(w, r, "Username not changed: current password is incorrect.")
 		return
 	}
@@ -62,6 +64,7 @@ func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionUsernameChange, "user", u.ID, username, audit.OutcomeSuccess, "was "+u.Username)
 	s.redirectOK(w, r, "/settings", "Username updated.")
 }
 
@@ -79,6 +82,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
+		s.recordAudit(r, audit.ActionPasswordChange, "user", u.ID, u.Username, audit.OutcomeFailure, "current password incorrect")
 		s.renderSettings(w, r, "Password not changed: current password is incorrect.")
 		return
 	}
@@ -101,5 +105,6 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.Store.DeleteOtherSessionsForUser(r.Context(), u.ID, sessionFromCtx(r.Context()).ID)
+	s.recordAudit(r, audit.ActionPasswordChange, "user", u.ID, u.Username, audit.OutcomeSuccess, "other sessions signed out")
 	s.redirectOK(w, r, "/settings", "Password updated; other sessions were signed out.")
 }

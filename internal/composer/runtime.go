@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	LabelApp     = "space-elevator.app"
-	LabelService = "space-elevator.service"
-	LabelManaged = "space-elevator.managed"
+	LabelApp         = "space-elevator.app"
+	LabelService     = "space-elevator.service"
+	LabelManaged     = "space-elevator.managed"
+	LabelKind        = "space-elevator.kind"
+	LabelScaleToZero = "space-elevator.scale-to-zero"
 )
 
 type Runtime struct {
@@ -168,6 +170,12 @@ func (r *Runtime) deployService(ctx context.Context, meta AppMeta, svcName strin
 		LabelService: svcName,
 		LabelManaged: "1",
 	})
+	if meta.Kind != "" {
+		labels[LabelKind] = meta.Kind
+	}
+	if meta.ScaleToZero {
+		labels[LabelScaleToZero] = "1"
+	}
 
 	mem := meta.MemoryBytes
 	if mem == 0 {

@@ -74,4 +74,11 @@ type AppMeta struct {
 	// PidsLimit overrides the runtime default PIDs limit. 0 means "use
 	// the runtime default".
 	PidsLimit int64
+	// Kind is the app kind ("web"/"function"/"custom"), recorded as a
+	// container label so a future scale-to-zero activator can discover
+	// function containers by label.
+	Kind string
+	// ScaleToZero marks containers a future activator may stop when idle
+	// and start on demand. Inert until the activator lands.
+	ScaleToZero bool
 }

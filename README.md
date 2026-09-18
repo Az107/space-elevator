@@ -1,12 +1,14 @@
 # space-elevator
 
 Podman-first deployment tool. Single binary that is both a CLI and a web
-dashboard: deploy compose stacks or plain source repos, get Traefik
+dashboard: deploy compose stacks, plain source repos, static sites, or
+serverless-style functions from git or an uploaded archive, get Traefik
 routing and a REST API.
 
 - **Web/CLI/API roadmap**: see [PLAN.md](./PLAN.md) — v2 (account
   management, env/secrets, advanced builds, REST API with PATs) is done.
 - **API docs**: [docs/api.md](./docs/api.md)
+- **Writing functions**: [docs/functions.md](./docs/functions.md)
 
 ## Requirements
 
@@ -53,18 +55,56 @@ journalctl --user -u space-elevator -f    # logs
 To ship a new build: `make install-service` (or `make install` +
 `systemctl --user restart space-elevator`).
 
+## Audit log
+
+Security-relevant actions (logins and failures, account/password and API
+token changes, app deploys/redeploys, removals, renames, env/secret and
+domain edits) are recorded to an append-only `audit_events` table in the
+state DB and emitted as one JSON line per event on stderr. Under the
+systemd unit that means journald:
+
+```sh
+journalctl --user -u space-elevator | grep '"audit":true'
+```
+
+Events carry actor type/id/label (`user`, `token`, `cli`, `system`,
+`anonymous`), action, target, outcome, client IP, and User-Agent. Client
+IPs are taken from `CF-Connecting-IP` / `X-Forwarded-For` only when the
+direct peer is a local/private proxy, so a direct client cannot spoof
+them. Secret and password values are never written. Events older than 90
+days are pruned by the hourly GC sweep.
+
 ## Commands
 
 ```sh
 space-elevator apps deploy <git-url> --name demo   # compose stack
 space-elevator apps deploy <git-url> --image node:20 \
   --build-cmd "npm ci && npm run build" --run-cmd "npm start" --port 3000
+space-elevator apps deploy <repo> --kind function --language python \
+  --runtime 3.12 --entrypoint handler.py:handler   # serverless function
+space-elevator apps upload site.tar.gz              # quick deploy an archive
+space-elevator apps upload fn.zip --kind function --language node --entrypoint index.js:handler
 space-elevator apps list | logs | start | stop | restart | rename | redeploy | remove
-space-elevator apps list
-space-elevator apps deploy <repo> --env K=V --secret K=V
 space-elevator user reset-password                 # lockout recovery
 space-elevator serve                               # web dashboard (the service runs this)
 ```
+
+The dashboard's **New app** wizard covers all of this: pick a kind
+(web / function / container) and a source (git / upload). The apps page
+also keeps a one-drop quick-deploy zone for archives.
+
+### Functions
+
+Function apps get a generated Python or Node HTTP adapter that maps each
+request to an API Gateway-style event and calls your handler
+(`handler.py:handler`, `index.js:handler`). Dependencies in
+`requirements.txt` / `package.json` are installed at build time. The
+adapter exposes `/__se/health` and containers carry a
+`space-elevator.kind=function` label; scale-to-zero is planned and the
+storage/labels are already in place, but functions run always-on today.
+
+See **[docs/functions.md](./docs/functions.md)** for handler examples, the
+event/response contract, dependencies, and how to test an adapter locally.
 
 ## Layout
 

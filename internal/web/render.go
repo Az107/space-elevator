@@ -66,7 +66,7 @@ func NewRenderer() (*Renderer, error) {
 	}
 	pages, err := template.New("").Funcs(funcs).ParseFS(Pages(),
 		"apps.html", "app_detail.html", "deploy.html", "settings.html",
-		"login.html", "setup.html", "files.html")
+		"login.html", "setup.html", "files.html", "icons.html")
 	if err != nil {
 		return nil, err
 	}

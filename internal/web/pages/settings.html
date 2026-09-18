@@ -19,7 +19,7 @@
             <input type="text" name="username" value="{{ .Username }}" maxlength="64" required>
           </label>
           <div>
-            <button type="submit">Change username</button>
+            <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Change username</span></button>
           </div>
         </form>
         <form method="post" action="/settings/account/password" class="form">
@@ -36,7 +36,7 @@
             </label>
           </div>
           <div>
-            <button type="submit">Change password</button>
+            <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Change password</span></button>
           </div>
         </form>
       </div>
@@ -46,7 +46,10 @@
     <section class="panel token-reveal">
       <h2>API token created</h2>
       <p class="panel-desc"><strong>{{ .NewTokenName }}</strong> — copy it now; it is shown <strong>only this once</strong>.</p>
-      <code class="token-raw">{{ .NewToken }}</code>
+      <div class="token-row">
+        <code class="token-raw">{{ .NewToken }}</code>
+        <button type="button" class="copy-btn" data-copy="{{ .NewToken }}" data-tip="Copy token" aria-label="Copy API token">{{ template "i-copy" }}</button>
+      </div>
     </section>
     {{ end }}
 
@@ -62,9 +65,9 @@
           <span class="muted mono">{{ .Prefix }}…</span>
           {{ if .ExpiresAt }}<span class="muted">expires {{ .ExpiresAt.Format "2006-01-02" }}</span>{{ else }}<span class="muted">no expiry</span>{{ end }}
           <form action="/settings/tokens/{{ .ID }}/delete" method="post" class="inline"
-                data-confirm="Revoke API token {{ .Name }}?">
+                data-confirm="Revoke API token {{ .Name }}?" data-confirm-variant="danger" data-busy>
             <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-            <button type="submit" class="link danger">revoke</button>
+            <button type="submit" class="btn subtle danger sm" aria-label="Revoke {{ .Name }}">{{ template "i-trash" }}<span class="btn-label">Revoke</span></button>
           </form>
         </li>
         {{ end }}
@@ -79,7 +82,7 @@
           <option value="60">60 days</option>
           <option value="90">90 days</option>
         </select>
-        <button type="submit">Generate token</button>
+        <button type="submit">{{ template "i-key" }}<span class="btn-label">Generate token</span></button>
       </form>
     </section>
 
@@ -117,7 +120,7 @@
           <input type="password" name="token" required>
         </label>
         <div>
-          <button type="submit">Save credential</button>
+          <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Save credential</span></button>
         </div>
       </form>
     </section>
@@ -135,9 +138,9 @@
       <h2>Security</h2>
       <p class="panel-desc">Sign out everywhere invalidates every active session on all devices.</p>
       <form method="post" action="/logout/all" class="inline-form"
-            data-confirm="Sign out on all devices?">
+            data-confirm="Sign out on all devices?" data-busy>
         <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
-        <button type="submit" class="ghost">Sign out everywhere</button>
+        <button type="submit" class="ghost">{{ template "i-logout" }}<span class="btn-label">Sign out everywhere</span></button>
       </form>
     </section>
   </div>

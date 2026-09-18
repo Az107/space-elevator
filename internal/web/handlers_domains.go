@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/store"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
@@ -93,9 +94,11 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := strings.TrimSpace(r.FormValue("domain"))
 	if err := s.attachDomain(r.Context(), a, domain); err != nil {
+		s.recordAudit(r, audit.ActionDomainAdd, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionDomainAdd, "app", a.ID, a.Name, audit.OutcomeSuccess, "domain "+domain)
 	s.redirectOK(w, r, "/apps/"+a.Name, fmt.Sprintf("Domain %s attached.", domain))
 }
 
@@ -108,9 +111,11 @@ func (s *Server) handleDomainRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := chi.URLParam(r, "domain")
 	if err := s.detachDomain(r.Context(), a, domain); err != nil {
+		s.recordAudit(r, audit.ActionDomainRemove, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		s.redirectErr(w, r, "/apps/"+a.Name, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionDomainRemove, "app", a.ID, a.Name, audit.OutcomeSuccess, "domain "+domain)
 	s.redirectOK(w, r, "/apps/"+a.Name, fmt.Sprintf("Domain %s detached.", domain))
 }
 

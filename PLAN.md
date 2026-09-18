@@ -757,3 +757,43 @@ encrypted-at-rest secrets, deploy webhooks, multi-user.
 | 2. Env & secrets | 1–2d |
 | 3. Advanced deploy | 1–2d |
 | 4. PAT + API | 2–3d |
+
+# v3 — Functions & unified deploy wizard
+
+## Overview
+
+Adds a third workload kind, **function** (Lambda-style), and unifies
+deployment behind a single wizard while keeping the zero-config dropzone.
+
+## App kinds
+
+`apps.kind` is `web` (default), `function`, or `custom` — orthogonal to
+`source_type` (git/drop). Function apps store `runtime`,
+`runtime_version`, and `entrypoint`.
+
+## Functions (always-on for now)
+
+- `internal/builder/function.go` synthesizes a single-stage Dockerfile
+  plus a platform-owned Python/Node HTTP adapter that maps requests to an
+  API Gateway (payload 2.0) proxy event and calls the user handler.
+- Deps installed at build time (`requirements.txt` / `package.json`).
+- Adapter exposes `/__se/health`; containers carry
+  `space-elevator.kind=function`.
+- Scale-to-zero is future work: `scale_to_zero`, `idle_timeout`, and
+  `last_invoked_at` are stored now and route writing is centralized in
+  `deployer.applyRoute` so an activator can be inserted later.
+
+## Unified surfaces
+
+- Web wizard at `/apps/new` (kind → source → kind-specific fields);
+  the apps-page dropzone remains as quick deploy.
+- REST: `POST /api/v1/apps` gains kind/function fields;
+  `POST /api/v1/apps/upload` handles multipart archives.
+- CLI: `apps deploy` gains `--kind/--language/--runtime/--entrypoint`;
+  new `apps upload <archive>` command.
+
+## Shared pipeline
+
+Archive extraction moved to `internal/builder/archive.go`;
+`deployer.CreateUpload` + `deployer.Redeploy` are shared by web, API, and
+CLI.

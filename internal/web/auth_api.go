@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/albertoruiz/space-elevator/internal/audit"
 )
 
 // requireAPIToken authenticates /api/v1 requests via a Personal Access
@@ -33,7 +35,13 @@ func (s *Server) requireAPIToken(next http.Handler) http.Handler {
 		if tok.LastUsedAt == nil || now.Sub(*tok.LastUsedAt) > time.Minute {
 			_ = s.Store.TouchAPIToken(r.Context(), tok.ID, now)
 		}
-		next.ServeHTTP(w, r)
+		// Attribute everything downstream to the token, not a session.
+		ctx := audit.WithActor(r.Context(), audit.Actor{
+			Type:  audit.ActorToken,
+			ID:    tok.ID,
+			Label: tok.Name,
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

@@ -59,6 +59,17 @@
       Sign out</button>
   </form>
 </nav>
+
+<dialog id="confirm-dialog" class="modal" aria-labelledby="confirm-title">
+  <div class="form">
+    <h2 id="confirm-title">Are you sure?</h2>
+    <p class="modal-msg" id="confirm-message"></p>
+    <div class="modal-actions">
+      <button type="button" class="ghost" id="confirm-cancel">Cancel</button>
+      <button type="button" class="btn" id="confirm-accept">Confirm</button>
+    </div>
+  </div>
+</dialog>
 {{ end }}
 <main{{ if not .Authed }} class="auth"{{ end }}>
 {{ if .Error }}{{ if .Authed }}<div class="flash{{ if eq .FlashKind "s" }} flash-ok{{ end }}" role="alert" data-flash>

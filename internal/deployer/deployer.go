@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/builder"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/podman"
@@ -47,6 +48,8 @@ type Options struct {
 	// deploy, route) so UIs can drive a progress indicator. Nil-safe:
 	// New installs a no-op.
 	Stage func(stage string)
+	// Audit records deploy outcomes. Nil-safe: nil disables auditing.
+	Audit *audit.Logger
 }
 
 // Deployer runs deploys and redeploys against a store + podman runtime.
@@ -81,6 +84,17 @@ type GitRequest struct {
 	// when non-nil. A repo that ships its own compose file always
 	// wins over these settings.
 	Build *builder.CustomBuild
+	// Kind selects the workload class. Empty means "web" (except that an
+	// existing app's kind is preserved when redeploying). "function"
+	// synthesizes an adapter-wrapped handler from Runtime/Entrypoint.
+	Kind           string
+	Runtime        string
+	RuntimeVersion string
+	Entrypoint     string
+	// ScaleToZero/idle settings are stored now and applied by a future
+	// activator; they also gate the container labels.
+	ScaleToZero bool
+	IdleTimeout int
 }
 
 // DeployGit runs the full pipeline synchronously:
@@ -92,6 +106,13 @@ type GitRequest struct {
 // stored env survives unless overridden in the request). Every failure
 // is recorded on the app row before returning.
 func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, error) {
+	return d.deployGit(ctx, req, audit.ActionAppDeploy)
+}
+
+// deployGit runs the pipeline and attributes the outcome to action
+// ("app.deploy" for a fresh deploy, "app.redeploy" when healing an
+// existing app through the full git pipeline).
+func (d *Deployer) deployGit(ctx context.Context, req GitRequest, action string) (*store.App, error) {
 	if !ValidAppName(req.Name) {
 		return nil, fmt.Errorf("invalid app name %q: use 1-63 lowercase letters, digits, or hyphens", req.Name)
 	}
@@ -127,6 +148,22 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 		builderImage, buildCmd, runCmd, port = req.Build.BuilderImage, req.Build.BuildCommand, req.Build.RunCommand, req.Build.ListenPort
 	}
 
+	// Kind: explicit request wins; otherwise preserve the stored kind on
+	// redeploy; otherwise "web". Function fields are validated up front.
+	kind := store.KindWeb
+	if req.Kind != "" {
+		kind = req.Kind
+	} else if prev != nil && prev.Kind != "" {
+		kind = prev.Kind
+	}
+	if kind == store.KindFunction {
+		if err := (builder.FunctionBuild{
+			Language: req.Runtime, Version: req.RuntimeVersion, Entrypoint: req.Entrypoint,
+		}).Validate(); err != nil {
+			return nil, fmt.Errorf("function: %w", err)
+		}
+	}
+
 	// Re-deploying over an existing row keeps its runtime slug (which
 	// may differ from the name after a rename); a fresh app's slug is
 	// its name.
@@ -135,19 +172,28 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 		slug = prev.Slug
 	}
 	app := &store.App{
-		ID:           appID,
-		Name:         req.Name,
-		Slug:         slug,
-		SourceType:   "git",
-		SourceRef:    req.RepoURL,
-		GitRef:       ref,
-		Env:          env,
-		BuildMode:    buildMode,
-		BuilderImage: builderImage,
-		BuildCommand: buildCmd,
-		RunCommand:   runCmd,
-		ListenPort:   port,
-		Status:       "pending",
+		ID:             appID,
+		Name:           req.Name,
+		Slug:           slug,
+		SourceType:     "git",
+		SourceRef:      req.RepoURL,
+		GitRef:         ref,
+		Env:            env,
+		BuildMode:      buildMode,
+		BuilderImage:   builderImage,
+		BuildCommand:   buildCmd,
+		RunCommand:     runCmd,
+		ListenPort:     port,
+		Kind:           kind,
+		Runtime:        req.Runtime,
+		RuntimeVersion: req.RuntimeVersion,
+		Entrypoint:     req.Entrypoint,
+		ScaleToZero:    req.ScaleToZero,
+		IdleTimeout:    req.IdleTimeout,
+		Status:         "pending",
+	}
+	if kind == store.KindFunction {
+		app.ListenPort = builder.DefaultFunctionPort
 	}
 
 	// Create/refresh the row up front so a failed clone is visible on
@@ -162,6 +208,7 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 
 	fail := func(err error) (*store.App, error) {
 		_ = d.Store.UpdateAppStatusErr(ctx, appID, "error", err.Error())
+		d.audit(ctx, action, app, audit.OutcomeFailure, err.Error())
 		return nil, err
 	}
 
@@ -209,7 +256,10 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 	if err != nil {
 		return fail(fmt.Errorf("load env: %w", err))
 	}
-	meta := composer.AppMeta{ID: appID, Name: app.Slug, Env: runtimeEnv, Label: app.Slug, BuildEnv: app.Env}
+	meta := composer.AppMeta{
+		ID: appID, Name: app.Slug, Env: runtimeEnv, Label: app.Slug, BuildEnv: app.Env,
+		Kind: app.Kind, ScaleToZero: app.ScaleToZero,
+	}
 
 	// Tear down the previous deployment, if any, before bringing the
 	// new one up (same container names would collide).
@@ -233,6 +283,7 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 
 	d.Opts.Stage("route")
 	d.applyRoute(ctx, app, spec)
+	d.audit(ctx, action, app, audit.OutcomeSuccess, "source "+app.SourceType+" "+app.SourceRef+" ref "+app.GitRef)
 	return app, nil
 }
 
@@ -240,6 +291,20 @@ func (d *Deployer) DeployGit(ctx context.Context, req GitRequest) (*store.App, e
 // build mode, synthesizes Dockerfile + compose.yml there. Returns the
 // compose bytes to parse and store.
 func (d *Deployer) resolveCompose(ctx context.Context, app *store.App, sourceDir string) ([]byte, error) {
+	// Functions always use the generated adapter, even if the repo also
+	// ships a compose file.
+	if app.Kind == store.KindFunction {
+		fb := builder.FunctionBuild{
+			Language:   app.Runtime,
+			Version:    app.RuntimeVersion,
+			Entrypoint: app.Entrypoint,
+			EnvKeys:    envKeys(app.Env),
+		}
+		if err := builder.WriteFunctionBuild(sourceDir, fb); err != nil {
+			return nil, fmt.Errorf("function build: %w", err)
+		}
+		return []byte(fb.Compose()), nil
+	}
 	composePath, composeErr := builder.FindComposeFile(sourceDir)
 	if composeErr == nil {
 		b, err := os.ReadFile(composePath)
@@ -297,13 +362,19 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 					ListenPort:   a.ListenPort,
 				}
 			}
-			_, err := d.DeployGit(ctx, GitRequest{
-				Name:    a.Name,
-				RepoURL: a.SourceRef,
-				Ref:     ref,
-				Env:     a.Env,
-				Build:   build,
-			})
+			_, err := d.deployGit(ctx, GitRequest{
+				Name:           a.Name,
+				RepoURL:        a.SourceRef,
+				Ref:            ref,
+				Env:            a.Env,
+				Build:          build,
+				Kind:           a.Kind,
+				Runtime:        a.Runtime,
+				RuntimeVersion: a.RuntimeVersion,
+				Entrypoint:     a.Entrypoint,
+				ScaleToZero:    a.ScaleToZero,
+				IdleTimeout:    a.IdleTimeout,
+			}, audit.ActionAppRedeploy)
 			return err
 		}
 	}
@@ -339,6 +410,17 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 			return fmt.Errorf("regenerate static files: %w", err)
 		}
 	}
+	if a.Kind == store.KindFunction {
+		fb := builder.FunctionBuild{
+			Language:   a.Runtime,
+			Version:    a.RuntimeVersion,
+			Entrypoint: a.Entrypoint,
+			EnvKeys:    envKeys(a.Env),
+		}
+		if err := builder.WriteFunctionBuild(sourceDir, fb); err != nil {
+			return fmt.Errorf("function build settings invalid: %w", err)
+		}
+	}
 	if a.BuildMode == store.BuildModeCustom {
 		cb := builder.CustomBuild{
 			BuilderImage: a.BuilderImage,
@@ -357,12 +439,14 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 		return fmt.Errorf("load env: %w", err)
 	}
 	meta := composer.AppMeta{
-		ID:         a.ID,
-		Name:       a.Slug,
-		Env:        runtimeEnv,
-		Label:      a.Slug,
-		BuildEnv:   a.Env,
-		StaticDrop: a.SourceType == "drop" && a.DropKind == "static",
+		ID:          a.ID,
+		Name:        a.Slug,
+		Env:         runtimeEnv,
+		Label:       a.Slug,
+		BuildEnv:    a.Env,
+		StaticDrop:  a.SourceType == "drop" && a.DropKind == "static",
+		Kind:        a.Kind,
+		ScaleToZero: a.ScaleToZero,
 	}
 
 	d.Opts.Log("Tearing down previous deployment for %s...", a.Name)
@@ -373,6 +457,7 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 	d.Opts.Log("Re-deploying %s...", a.Name)
 	if err := d.Runtime.Deploy(ctx, meta, spec, sourceDir); err != nil {
 		_ = d.Store.UpdateAppStatusErr(ctx, a.ID, "error", "deploy failed: "+err.Error())
+		d.audit(ctx, audit.ActionAppRedeploy, a, audit.OutcomeFailure, err.Error())
 		return err
 	}
 	if err := d.Store.UpdateAppStatusErr(ctx, a.ID, "running", ""); err != nil {
@@ -380,6 +465,7 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 	}
 	d.Opts.Stage("route")
 	d.applyRoute(ctx, a, spec)
+	d.audit(ctx, audit.ActionAppRedeploy, a, audit.OutcomeSuccess, "source "+a.SourceType+" "+a.SourceRef)
 	return nil
 }
 
@@ -388,14 +474,53 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 // happened instead of a silently swallowed error.
 func (d *Deployer) recordRedeployError(ctx context.Context, a *store.App, err error) error {
 	_ = d.Store.UpdateAppStatusErr(ctx, a.ID, "error", err.Error())
+	d.audit(ctx, audit.ActionAppRedeploy, a, audit.OutcomeFailure, err.Error())
 	return err
+}
+
+// audit records a deploy outcome. Nil-safe and best-effort; the actor,
+// IP, and User-Agent are read from ctx by the audit logger.
+func (d *Deployer) audit(ctx context.Context, action string, app *store.App, outcome, detail string) {
+	if d.Opts.Audit == nil || app == nil {
+		return
+	}
+	d.Opts.Audit.Record(ctx, audit.Event{
+		Action:     action,
+		TargetType: "app",
+		TargetID:   app.ID,
+		TargetName: app.Name,
+		Outcome:    outcome,
+		Detail:     detail,
+	})
 }
 
 // applyRoute rewrites the app's Traefik dynamic file from current
 // container state; failures are logged, not fatal (the app is up).
 func (d *Deployer) applyRoute(ctx context.Context, a *store.App, spec *composer.Spec) {
-	domains, _ := d.Store.GetAppDomains(ctx, a.ID)
-	if _, err := traefik.ApplyAppRoute(ctx, traefik.AppOptions{
+	if err := d.SyncRoute(ctx, a); err != nil {
+		d.Opts.Log("warn: traefik: %v", err)
+		return
+	}
+	d.Opts.Log("Traefik route written for %s.", a.Name)
+}
+
+// SyncRoute makes the app's Traefik dynamic file match its attached
+// domains and current containers. When the app has no exposure
+// configured, or its containers are not running, ApplyAppRoute removes
+// any existing file so Traefik never keeps routing to a dead backend
+// (502) or a live backend with no route (404). Callers on start, stop,
+// restart, and startup must keep routing in sync this way; the plain
+// Runtime.Start/Stop helpers do not touch Traefik.
+func (d *Deployer) SyncRoute(ctx context.Context, a *store.App) error {
+	spec, err := composer.Parse([]byte(a.ComposeYAML))
+	if err != nil {
+		return fmt.Errorf("stored compose is invalid: %w", err)
+	}
+	domains, err := d.Store.GetAppDomains(ctx, a.ID)
+	if err != nil {
+		return err
+	}
+	_, err = traefik.ApplyAppRoute(ctx, traefik.AppOptions{
 		Writer:          d.Traefik,
 		Client:          d.Client,
 		AppName:         a.Slug,
@@ -404,11 +529,8 @@ func (d *Deployer) applyRoute(ctx context.Context, a *store.App, spec *composer.
 		PublicHost:      d.Opts.PublicHost,
 		AppPathPrefix:   d.Opts.AppPathPrefix,
 		RootlessGateway: d.Opts.RootlessGateway,
-	}); err != nil {
-		d.Opts.Log("warn: traefik: %v", err)
-		return
-	}
-	d.Opts.Log("Traefik route written for %s.", a.Name)
+	})
+	return err
 }
 
 func (d *Deployer) gitAuth(ctx context.Context, repoURL string) *builder.Auth {

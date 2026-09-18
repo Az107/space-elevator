@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/builder"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/deployer"
@@ -41,11 +42,11 @@ type apiAppView struct {
 
 func (s *Server) appView(ctx context.Context, a *store.App, live bool) *apiAppView {
 	view := &apiAppView{
-		App:         a,
-		Domains:     []string{},
-		SecretKeys:  []string{},
+		App:           a,
+		Domains:       []string{},
+		SecretKeys:    []string{},
 		RuntimeStatus: a.Status,
-		Services:    []string{},
+		Services:      []string{},
 	}
 	view.Domains, _ = s.Store.GetAppDomains(ctx, a.ID)
 	view.SecretKeys, _ = s.Store.ListSecretKeys(ctx, a.ID)
@@ -103,6 +104,14 @@ type apiCreateAppBody struct {
 	Env     map[string]string `json:"env"`
 	Secrets map[string]string `json:"secrets"`
 	Build   *apiBuildBody     `json:"build"`
+	// Kind selects the workload class: "web" (default), "function", or
+	// "custom". Function fields are read when Kind == "function".
+	Kind           string `json:"kind"`
+	Runtime        string `json:"runtime"`
+	RuntimeVersion string `json:"runtime_version"`
+	Entrypoint     string `json:"entrypoint"`
+	ScaleToZero    bool   `json:"scale_to_zero"`
+	IdleTimeout    int    `json:"idle_timeout"`
 }
 
 type apiBuildBody struct {
@@ -143,8 +152,29 @@ func (s *Server) apiCreateApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	kind := in.Kind
+	if kind == "" {
+		kind = store.KindWeb
+	}
+	switch kind {
+	case store.KindWeb, store.KindFunction, store.KindCustom:
+	default:
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("unknown kind %q (use web, function, or custom)", kind))
+		return
+	}
+	fb := builder.FunctionBuild{
+		Language:   in.Runtime,
+		Version:    in.RuntimeVersion,
+		Entrypoint: in.Entrypoint,
+	}
+	if kind == store.KindFunction {
+		if err := fb.Validate(); err != nil {
+			jsonError(w, http.StatusBadRequest, "function: "+err.Error())
+			return
+		}
+	}
 	var buildReq *builder.CustomBuild
-	if in.Build != nil {
+	if in.Build != nil && kind != store.KindFunction {
 		buildReq = &builder.CustomBuild{
 			BuilderImage: in.Build.Image,
 			BuildCommand: in.Build.BuildCommand,
@@ -164,13 +194,19 @@ func (s *Server) apiCreateApp(w http.ResponseWriter, r *http.Request) {
 	// Same up-front row creation as the web flow: the 202 points at a
 	// resource that already exists, and failures land on the row.
 	app := &store.App{
-		ID:         uuid.NewString(),
-		Name:       in.Name,
-		SourceType: "git",
-		SourceRef:  in.URL,
-		GitRef:     in.Ref,
-		Env:        in.Env,
-		Status:     "pending",
+		ID:             uuid.NewString(),
+		Name:           in.Name,
+		SourceType:     "git",
+		SourceRef:      in.URL,
+		GitRef:         in.Ref,
+		Env:            in.Env,
+		Kind:           kind,
+		Runtime:        fb.Language,
+		RuntimeVersion: fb.Version,
+		Entrypoint:     fb.Entrypoint,
+		ScaleToZero:    in.ScaleToZero,
+		IdleTimeout:    in.IdleTimeout,
+		Status:         "pending",
 	}
 	if buildReq != nil {
 		app.BuildMode = store.BuildModeCustom
@@ -179,21 +215,66 @@ func (s *Server) apiCreateApp(w http.ResponseWriter, r *http.Request) {
 		app.RunCommand = buildReq.RunCommand
 		app.ListenPort = buildReq.ListenPort
 	}
+	if kind == store.KindFunction {
+		app.ListenPort = builder.DefaultFunctionPort
+	}
 	if err := s.Store.CreateApp(r.Context(), app); err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionAppCreate, "app", app.ID, app.Name, audit.OutcomeSuccess, "git "+in.URL+" ref "+in.Ref)
 
-	go s.deployAsync(deployer.GitRequest{
-		Name:    in.Name,
-		RepoURL: in.URL,
-		Ref:     in.Ref,
-		Env:     in.Env,
-		Secrets: in.Secrets,
-		Build:   buildReq,
+	go s.deployAsync(s.backgroundAuditCtx(r), deployer.GitRequest{
+		Name:           in.Name,
+		RepoURL:        in.URL,
+		Ref:            in.Ref,
+		Env:            in.Env,
+		Secrets:        in.Secrets,
+		Build:          buildReq,
+		Kind:           kind,
+		Runtime:        fb.Language,
+		RuntimeVersion: fb.Version,
+		Entrypoint:     fb.Entrypoint,
+		ScaleToZero:    in.ScaleToZero,
+		IdleTimeout:    in.IdleTimeout,
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name":   in.Name,
+		"status": "pending",
+	})
+}
+
+// apiUploadApp deploys an uploaded archive (multipart/form-data). It
+// shares the wizard/dropzone creation path; the response is a 202 and
+// the deploy runs asynchronously.
+//
+// Form fields: tarball (required), kind (web|function|custom), name,
+// language, runtime_version, entrypoint, env, secrets, scale_to_zero,
+// idle_timeout.
+func (s *Server) apiUploadApp(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		jsonError(w, http.StatusBadRequest, "could not parse multipart upload: "+err.Error())
+		return
+	}
+	app, err := s.createUploadFromRequest(r)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.recordAudit(r, audit.ActionAppUpload, "app", app.ID, app.Name, audit.OutcomeSuccess, "archive "+app.SourceRef)
+	base := s.backgroundAuditCtx(r)
+	go func(a *store.App) {
+		defer func() {
+			if p := recover(); p != nil {
+				_ = s.Store.UpdateAppStatusErr(context.Background(), a.ID, "error", fmt.Sprintf("internal deploy panic: %v", p))
+			}
+		}()
+		ctx, cancel := context.WithTimeout(base, apiRedeployTimeout)
+		defer cancel()
+		_ = s.Deployer.Redeploy(ctx, a)
+	}(app)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"name":   app.Name,
 		"status": "pending",
 	})
 }
@@ -217,13 +298,15 @@ func (s *Server) apiRedeployApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.Store.UpdateAppStatusErr(r.Context(), a.ID, "pending", "")
+	s.recordAudit(r, audit.ActionAppRedeploy, "app", a.ID, a.Name, audit.OutcomeSuccess, "requested")
+	base := s.backgroundAuditCtx(r)
 	go func(app *store.App) {
 		defer func() {
 			if p := recover(); p != nil {
 				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal redeploy panic: %v", p))
 			}
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), apiRedeployTimeout)
+		ctx, cancel := context.WithTimeout(base, apiRedeployTimeout)
 		defer cancel()
 		_ = s.Deployer.Redeploy(ctx, app)
 	}(a)
@@ -252,6 +335,7 @@ func (s *Server) apiPutAppEnv(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionEnvUpdate, "app", a.ID, a.Name, audit.OutcomeSuccess, fmt.Sprintf("%d keys", len(body)))
 	updated, _ := s.Store.GetAppByName(r.Context(), a.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"env": updated.Env, "note": "applied on next redeploy"})
 }
@@ -280,6 +364,7 @@ func (s *Server) apiPutAppSecrets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.recordAudit(r, audit.ActionSecretSet, "app", a.ID, a.Name, audit.OutcomeSuccess, fmt.Sprintf("%d keys", len(body)))
 	keys, _ := s.Store.ListSecretKeys(r.Context(), a.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys, "note": "applied on next redeploy"})
 }
@@ -299,6 +384,7 @@ func (s *Server) apiDeleteSecret(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionSecretDelete, "app", a.ID, a.Name, audit.OutcomeSuccess, "key "+key)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
@@ -315,9 +401,11 @@ func (s *Server) apiAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.attachDomain(r.Context(), a, body.Domain); err != nil {
+		s.recordAudit(r, audit.ActionDomainAdd, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		apiDomainError(w, err)
 		return
 	}
+	s.recordAudit(r, audit.ActionDomainAdd, "app", a.ID, a.Name, audit.OutcomeSuccess, "domain "+body.Domain)
 	writeJSON(w, http.StatusOK, map[string]any{"domains": stringSlice(s.Store.GetAppDomains(r.Context(), a.ID))})
 }
 
@@ -330,6 +418,7 @@ func (s *Server) apiRemoveDomain(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionDomainRemove, "app", a.ID, a.Name, audit.OutcomeSuccess, "domain "+chi.URLParam(r, "domain"))
 	writeJSON(w, http.StatusOK, map[string]any{"domains": stringSlice(s.Store.GetAppDomains(r.Context(), a.ID))})
 }
 
@@ -339,9 +428,12 @@ func (s *Server) apiRestartApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.restartAppContainers(r.Context(), a); err != nil {
+		s.recordAudit(r, audit.ActionAppRestart, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppRestart, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "status": "restarted"})
 }
 
@@ -351,10 +443,13 @@ func (s *Server) apiStartApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Runtime.Start(r.Context(), composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug}); err != nil {
+		s.recordAudit(r, audit.ActionAppStart, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = s.Store.UpdateAppStatus(r.Context(), a.ID, "running")
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppStart, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "status": "running"})
 }
 
@@ -364,10 +459,13 @@ func (s *Server) apiStopApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Runtime.Stop(r.Context(), composer.AppMeta{ID: a.ID, Name: a.Slug, Label: a.Slug}); err != nil {
+		s.recordAudit(r, audit.ActionAppStop, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = s.Store.UpdateAppStatus(r.Context(), a.ID, "stopped")
+	s.syncAppRoute(r.Context(), a)
+	s.recordAudit(r, audit.ActionAppStop, "app", a.ID, a.Name, audit.OutcomeSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "status": "stopped"})
 }
 
@@ -403,6 +501,7 @@ func (s *Server) apiRenameApp(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionAppRename, "app", a.ID, newName, audit.OutcomeSuccess, "was "+a.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": newName, "status": "renamed"})
 }
 
@@ -412,9 +511,11 @@ func (s *Server) apiDeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deleteApp(r.Context(), a); err != nil {
+		s.recordAudit(r, audit.ActionAppRemove, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.recordAudit(r, audit.ActionAppRemove, "app", a.ID, a.Name, audit.OutcomeSuccess, "source "+a.SourceType)
 	writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "status": "removed"})
 }
 

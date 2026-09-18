@@ -34,8 +34,23 @@ type App struct {
 	BuildCommand string `json:"build_command,omitempty"`
 	RunCommand   string `json:"run_command,omitempty"`
 	ListenPort   int    `json:"listen_port,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	// Kind classifies the workload: "web" (HTTP app/compose/static),
+	// "function" (adapter-wrapped handler), or "custom" (bring-your-own
+	// container/Dockerfile). It is orthogonal to SourceType.
+	Kind string `json:"kind"`
+	// Runtime/RuntimeVersion/Entrypoint describe function workloads:
+	// language ("python"|"node"), the version tag for the base image
+	// ("3.12"|"20"), and the handler location ("handler.py:handler").
+	Runtime        string `json:"runtime,omitempty"`
+	RuntimeVersion string `json:"runtime_version,omitempty"`
+	Entrypoint     string `json:"entrypoint,omitempty"`
+	// Scale-to-zero fields are stored now but inert until the activator
+	// lands; they future-proof the schema and the deploy labels.
+	ScaleToZero   bool      `json:"scale_to_zero,omitempty"`
+	IdleTimeout   int       `json:"idle_timeout,omitempty"`
+	LastInvokedAt int64     `json:"last_invoked_at,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Build mode values.
@@ -44,12 +59,27 @@ const (
 	BuildModeCustom  = "custom"
 )
 
+// Kind values.
+const (
+	KindWeb      = "web"
+	KindFunction = "function"
+	KindCustom   = "custom"
+)
+
 var ErrNotFound = errors.New("not found")
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 // appColumns is the canonical SELECT list for app rows.
 const appColumns = `id, name, slug, source_type, source_ref, git_ref, drop_kind,
 	compose_yaml, env_json, status, last_error,
 	build_mode, builder_image, build_command, run_command, listen_port,
+	kind, runtime, runtime_version, entrypoint, scale_to_zero, idle_timeout, last_invoked_at,
 	created_at, updated_at`
 
 func (s *Store) CreateApp(ctx context.Context, a *App) error {
@@ -59,6 +89,9 @@ func (s *Store) CreateApp(ctx context.Context, a *App) error {
 	if a.BuildMode == "" {
 		a.BuildMode = BuildModeCompose
 	}
+	if a.Kind == "" {
+		a.Kind = KindWeb
+	}
 	if a.Slug == "" {
 		a.Slug = a.Name
 	}
@@ -66,11 +99,13 @@ func (s *Store) CreateApp(ctx context.Context, a *App) error {
 		INSERT INTO apps (id, name, slug, source_type, source_ref, git_ref, drop_kind,
 		                  compose_yaml, env_json, status, last_error,
 		                  build_mode, builder_image, build_command, run_command, listen_port,
+		                  kind, runtime, runtime_version, entrypoint, scale_to_zero, idle_timeout, last_invoked_at,
 		                  created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.Name, a.Slug, a.SourceType, a.SourceRef, a.GitRef, a.DropKind,
 		a.ComposeYAML, string(env), a.Status, a.LastError,
 		a.BuildMode, a.BuilderImage, a.BuildCommand, a.RunCommand, a.ListenPort,
+		a.Kind, a.Runtime, a.RuntimeVersion, a.Entrypoint, boolToInt(a.ScaleToZero), a.IdleTimeout, a.LastInvokedAt,
 		a.CreatedAt.Unix(), a.UpdatedAt.Unix())
 	return err
 }
@@ -112,13 +147,18 @@ func (s *Store) UpdateApp(ctx context.Context, a *App) error {
 	if a.BuildMode == "" {
 		a.BuildMode = BuildModeCompose
 	}
+	if a.Kind == "" {
+		a.Kind = KindWeb
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE apps SET source_ref=?, git_ref=?, compose_yaml=?, env_json=?, status=?,
 			build_mode=?, builder_image=?, build_command=?, run_command=?, listen_port=?,
+			kind=?, runtime=?, runtime_version=?, entrypoint=?, scale_to_zero=?, idle_timeout=?,
 			updated_at=?
 		WHERE id=?`,
 		a.SourceRef, a.GitRef, a.ComposeYAML, string(env), a.Status,
 		a.BuildMode, a.BuilderImage, a.BuildCommand, a.RunCommand, a.ListenPort,
+		a.Kind, a.Runtime, a.RuntimeVersion, a.Entrypoint, boolToInt(a.ScaleToZero), a.IdleTimeout,
 		a.UpdatedAt.Unix(), a.ID)
 	return err
 }
@@ -213,19 +253,25 @@ func scanApp(r rowScanner) (*App, error) {
 	var a App
 	var env string
 	var created, updated int64
+	var scaleToZero int
 	err := r.Scan(&a.ID, &a.Name, &a.Slug, &a.SourceType, &a.SourceRef, &a.GitRef, &a.DropKind,
 		&a.ComposeYAML, &env, &a.Status, &a.LastError,
 		&a.BuildMode, &a.BuilderImage, &a.BuildCommand, &a.RunCommand, &a.ListenPort,
+		&a.Kind, &a.Runtime, &a.RuntimeVersion, &a.Entrypoint, &scaleToZero, &a.IdleTimeout, &a.LastInvokedAt,
 		&created, &updated)
 	if err != nil {
 		return nil, err
 	}
+	a.ScaleToZero = scaleToZero != 0
 	_ = json.Unmarshal([]byte(env), &a.Env)
 	if a.Env == nil {
 		a.Env = map[string]string{}
 	}
 	if a.BuildMode == "" {
 		a.BuildMode = BuildModeCompose
+	}
+	if a.Kind == "" {
+		a.Kind = KindWeb
 	}
 	// Rows written before the slug column existed, or a row created
 	// without an explicit slug, fall back to the name.

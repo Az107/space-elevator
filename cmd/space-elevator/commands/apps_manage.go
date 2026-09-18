@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/albertoruiz/space-elevator/internal/audit"
 	"github.com/albertoruiz/space-elevator/internal/composer"
 	"github.com/albertoruiz/space-elevator/internal/config"
 	"github.com/albertoruiz/space-elevator/internal/deployer"
@@ -33,7 +34,9 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer st.Close()
 
-	app, err := st.GetAppByName(cmd.Context(), args[0])
+	ctx, au := cliAudit(cmd.Context(), st)
+
+	app, err := st.GetAppByName(ctx, args[0])
 	if err != nil {
 		return err
 	}
@@ -56,7 +59,7 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 
 	meta := composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}
 	fmt.Printf("Removing %s...\n", app.Name)
-	if err := rt.Remove(cmd.Context(), meta, spec); err != nil {
+	if err := rt.Remove(ctx, meta, spec); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove runtime: %v\n", err)
 	}
 	if err := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver).Remove(app.Slug); err != nil {
@@ -66,16 +69,24 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 	// the app is gone. Ignore errors — the image may already be gone.
 	for svcName := range spec.Services {
 		tag := rt.ImageTag(app.Slug, svcName)
-		if err := cli.RemoveImage(cmd.Context(), tag, false); err != nil {
+		if err := cli.RemoveImage(ctx, tag, false); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warn: image remove %s: %v\n", tag, err)
 		}
 	}
 	if err := store.DeleteAppArtifacts(cfg.AppsRoot, app); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove artifacts: %v\n", err)
 	}
-	if err := st.DeleteApp(cmd.Context(), app.ID); err != nil {
+	if err := st.DeleteApp(ctx, app.ID); err != nil {
 		return err
 	}
+	au.Record(ctx, audit.Event{
+		Action:     audit.ActionAppRemove,
+		TargetType: "app",
+		TargetID:   app.ID,
+		TargetName: app.Name,
+		Outcome:    audit.OutcomeSuccess,
+		Detail:     "source " + app.SourceType,
+	})
 	fmt.Printf("OK: %s removed.\n", app.Name)
 	return nil
 }
@@ -124,7 +135,9 @@ func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
 	}
 	defer st.Close()
 
-	app, err := st.GetAppByName(cmd.Context(), name)
+	ctx, au := cliAudit(cmd.Context(), st)
+
+	app, err := st.GetAppByName(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -134,20 +147,36 @@ func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
 	}
 	defer cli.Close()
 	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
+	tw := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
+	dep := deployer.New(st, rt, cli, tw, deployer.Options{
+		AppsRoot:        cfg.AppsRoot,
+		PublicHost:      cfg.PublicHost,
+		AppPathPrefix:   cfg.AppPathPrefix,
+		RootlessGateway: cfg.RootlessGateway,
+		CertResolver:    cfg.CertResolver,
+	})
 	meta := composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}
 
 	if start {
-		if err := rt.Start(cmd.Context(), meta); err != nil {
+		if err := rt.Start(ctx, meta); err != nil {
 			return err
 		}
-		_ = st.UpdateAppStatus(cmd.Context(), app.ID, "running")
+		_ = st.UpdateAppStatus(ctx, app.ID, "running")
+		if err := dep.SyncRoute(ctx, app); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+		}
+		au.Record(ctx, audit.Event{Action: audit.ActionAppStart, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 		fmt.Printf("OK: %s started.\n", app.Name)
 		return nil
 	}
-	if err := rt.Stop(cmd.Context(), meta); err != nil {
+	if err := rt.Stop(ctx, meta); err != nil {
 		return err
 	}
-	_ = st.UpdateAppStatus(cmd.Context(), app.ID, "stopped")
+	_ = st.UpdateAppStatus(ctx, app.ID, "stopped")
+	if err := dep.SyncRoute(ctx, app); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+	}
+	au.Record(ctx, audit.Event{Action: audit.ActionAppStop, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 	fmt.Printf("OK: %s stopped.\n", app.Name)
 	return nil
 }
@@ -173,7 +202,9 @@ func runAppsRename(cmd *cobra.Command, args []string) error {
 	}
 	defer st.Close()
 
-	app, err := st.GetAppByName(cmd.Context(), oldName)
+	ctx, au := cliAudit(cmd.Context(), st)
+
+	app, err := st.GetAppByName(ctx, oldName)
 	if err != nil {
 		return err
 	}
@@ -181,12 +212,13 @@ func runAppsRename(cmd *cobra.Command, args []string) error {
 		fmt.Printf("OK: %s already named that.\n", app.Name)
 		return nil
 	}
-	if existing, err := st.GetAppByName(cmd.Context(), newName); err == nil && existing != nil {
+	if existing, err := st.GetAppByName(ctx, newName); err == nil && existing != nil {
 		return fmt.Errorf("app %q already exists", newName)
 	}
-	if err := st.UpdateAppName(cmd.Context(), app.ID, newName); err != nil {
+	if err := st.UpdateAppName(ctx, app.ID, newName); err != nil {
 		return err
 	}
+	au.Record(ctx, audit.Event{Action: audit.ActionAppRename, TargetType: "app", TargetID: app.ID, TargetName: newName, Outcome: audit.OutcomeSuccess, Detail: "was " + app.Name})
 	fmt.Printf("OK: %s renamed to %s (runtime unchanged).\n", app.Name, newName)
 	return nil
 }
@@ -199,13 +231,15 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 	}
 	defer st.Close()
 
+	ctx, au := cliAudit(cmd.Context(), st)
+
 	cli, err := podman.New(cfg.SocketPath)
 	if err != nil {
 		return err
 	}
 	defer cli.Close()
 
-	app, err := st.GetAppByName(cmd.Context(), args[0])
+	app, err := st.GetAppByName(ctx, args[0])
 	if err != nil {
 		return err
 	}
@@ -213,7 +247,7 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	cs, err := cli.ListContainersFiltered(cmd.Context(), true, map[string][]string{
+	cs, err := cli.ListContainersFiltered(ctx, true, map[string][]string{
 		"label": {composer.LabelApp + "=" + app.Slug},
 	})
 	if err != nil {
@@ -224,14 +258,28 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 		if err != nil || full == "" {
 			continue
 		}
-		if err := cli.StopContainer(cmd.Context(), full, 10); err != nil {
+		if err := cli.StopContainer(ctx, full, 10); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warn: stop %s: %v\n", c.ID, err)
 		}
-		if err := cli.StartContainer(cmd.Context(), full); err != nil {
+		if err := cli.StartContainer(ctx, full); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warn: start %s: %v\n", c.ID, err)
 		}
 		fmt.Printf("restarted %s\n", c.Name)
 	}
+	_ = st.UpdateAppStatus(ctx, app.ID, "running")
+	tw := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
+	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
+	dep := deployer.New(st, rt, cli, tw, deployer.Options{
+		AppsRoot:        cfg.AppsRoot,
+		PublicHost:      cfg.PublicHost,
+		AppPathPrefix:   cfg.AppPathPrefix,
+		RootlessGateway: cfg.RootlessGateway,
+		CertResolver:    cfg.CertResolver,
+	})
+	if err := dep.SyncRoute(ctx, app); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+	}
+	au.Record(ctx, audit.Event{Action: audit.ActionAppRestart, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 	return nil
 }
 
@@ -243,7 +291,9 @@ func runAppsRedeploy(cmd *cobra.Command, args []string) error {
 	}
 	defer st.Close()
 
-	app, err := st.GetAppByName(cmd.Context(), args[0])
+	ctx, au := cliAudit(cmd.Context(), st)
+
+	app, err := st.GetAppByName(ctx, args[0])
 	if err != nil {
 		return err
 	}
@@ -261,11 +311,12 @@ func runAppsRedeploy(cmd *cobra.Command, args []string) error {
 		AppPathPrefix:   cfg.AppPathPrefix,
 		RootlessGateway: cfg.RootlessGateway,
 		CertResolver:    cfg.CertResolver,
+		Audit:           au,
 		Log: func(f string, a ...any) {
 			fmt.Printf(f+"\n", a...)
 		},
 	})
-	if err := dep.Redeploy(cmd.Context(), app); err != nil {
+	if err := dep.Redeploy(ctx, app); err != nil {
 		return err
 	}
 	fmt.Printf("OK: %s redeployed.\n", app.Name)

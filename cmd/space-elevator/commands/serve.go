@@ -34,6 +34,10 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveAutoRoute, "register-self", true, "write the dashboard's Traefik file on startup (unregister with 'self-route unregister')")
 }
 
+// auditRetention is how long audit events are kept before the hourly
+// sweep prunes them.
+const auditRetention = 90 * 24 * time.Hour
+
 func runServe(cmd *cobra.Command, _ []string) error {
 	cfg := config.Default()
 	srv, err := web.NewServer(cfg)
@@ -60,6 +64,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	h := srv.Routes()
 	fmt.Printf("space-elevator listening on http://%s\n", serveAddr)
 
+	// Heal route/runtime drift left by a crash, host event, or proxy
+	// cutover: stale routes (Traefik 502) and missing routes (404). Runs
+	// in the background so the dashboard is reachable immediately.
+	go srv.ReconcileRoutes(cmd.Context())
+
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- http.ListenAndServe(serveAddr, h) }()
 
@@ -79,6 +88,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				purgeCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				if err := srv.Store.PurgeExpiredSessions(purgeCtx); err != nil {
 					fmt.Fprintf(os.Stderr, "gc: sessions: %v\n", err)
+				}
+				if _, err := srv.Store.PruneAudit(purgeCtx, time.Now().Add(-auditRetention)); err != nil {
+					fmt.Fprintf(os.Stderr, "gc: audit: %v\n", err)
 				}
 				cancel()
 			}
