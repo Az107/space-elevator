@@ -3,9 +3,9 @@ package commands
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/albertoruiz/space-elevator/internal/config"
 	"github.com/albertoruiz/space-elevator/internal/podman"
+	"github.com/spf13/cobra"
 )
 
 var networksCmd = &cobra.Command{

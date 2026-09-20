@@ -72,10 +72,10 @@ type TLSConfig struct {
 // (e.g. "/app/"). An empty PublicHost or AppPathPrefix disables path-prefix
 // routing for the file.
 type AppRouteConfig struct {
-	Routes         []ServiceRoute
-	PublicHost     string
-	AppPathPrefix  string
-	CertResolver   string
+	Routes        []ServiceRoute
+	PublicHost    string
+	AppPathPrefix string
+	CertResolver  string
 }
 
 // Render produces the YAML body for a per-app dynamic file. For each backend
@@ -105,11 +105,14 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 			continue
 		}
 		svcKey := serviceKey(r.AppName, r.Name)
+		secure := cfg.CertResolver != ""
 		httpsMw := svcKey + "-https"
 		stripMw := svcKey + "-strip"
 
-		dc.HTTP.Middlewares[httpsMw] = Middleware{
-			RedirectScheme: &RedirectScheme{Scheme: "https", Permanent: true},
+		if secure {
+			dc.HTTP.Middlewares[httpsMw] = Middleware{
+				RedirectScheme: &RedirectScheme{Scheme: "https", Permanent: true},
+			}
 		}
 		dc.HTTP.Services[svcKey] = Service{
 			LoadBalancer: LoadBalancer{
@@ -120,17 +123,25 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 		if len(r.Domain) > 0 {
 			hasSubdomain = true
 			rule := hostRule(r.Domain)
-			dc.HTTP.Routers[svcKey+"-secure"] = Router{
-				Rule:        rule,
-				EntryPoints: []string{"websecure"},
-				Service:     svcKey,
-				TLS:         &TLSConfig{CertResolver: cfg.CertResolver},
-			}
-			dc.HTTP.Routers[svcKey+"-web"] = Router{
-				Rule:        rule,
-				EntryPoints: []string{"web"},
-				Service:     svcKey,
-				Middlewares: []string{httpsMw},
+			if secure {
+				dc.HTTP.Routers[svcKey+"-secure"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"websecure"},
+					Service:     svcKey,
+					TLS:         &TLSConfig{CertResolver: cfg.CertResolver},
+				}
+				dc.HTTP.Routers[svcKey+"-web"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"web"},
+					Service:     svcKey,
+					Middlewares: []string{httpsMw},
+				}
+			} else {
+				dc.HTTP.Routers[svcKey+"-web"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"web"},
+					Service:     svcKey,
+				}
 			}
 		}
 
@@ -141,18 +152,27 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 			dc.HTTP.Middlewares[stripMw] = Middleware{
 				StripPrefix: &StripPrefix{Prefixes: []string{prefix + svcKey}},
 			}
-			dc.HTTP.Routers[svcKey+"-path-secure"] = Router{
-				Rule:        rule,
-				EntryPoints: []string{"websecure"},
-				Service:     svcKey,
-				Middlewares: []string{stripMw},
-				TLS:         &TLSConfig{CertResolver: cfg.CertResolver},
-			}
-			dc.HTTP.Routers[svcKey+"-path-web"] = Router{
-				Rule:        rule,
-				EntryPoints: []string{"web"},
-				Service:     svcKey,
-				Middlewares: []string{stripMw, httpsMw},
+			if secure {
+				dc.HTTP.Routers[svcKey+"-path-secure"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"websecure"},
+					Service:     svcKey,
+					Middlewares: []string{stripMw},
+					TLS:         &TLSConfig{CertResolver: cfg.CertResolver},
+				}
+				dc.HTTP.Routers[svcKey+"-path-web"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"web"},
+					Service:     svcKey,
+					Middlewares: []string{stripMw, httpsMw},
+				}
+			} else {
+				dc.HTTP.Routers[svcKey+"-path-web"] = Router{
+					Rule:        rule,
+					EntryPoints: []string{"web"},
+					Service:     svcKey,
+					Middlewares: []string{stripMw},
+				}
 			}
 		}
 	}

@@ -22,14 +22,10 @@ test:
 install: build
 	install -m 0755 $(DIST)/$(BINARY) $(BIN)/$(BINARY)
 
-# Installs the systemd user unit and enables the service. Run after
-# `make install` (and once after every build you want the service to
-# pick up: systemctl --user restart space-elevator).
+# Installs the systemd user unit (rendered with the resolved bind address)
+# and enables it. Run after `make install`.
 install-service: install
-	mkdir -p $(HOME)/.config/systemd/user
-	install -m 0644 deploy/$(BINARY).service $(HOME)/.config/systemd/user/$(BINARY).service
-	systemctl --user daemon-reload
-	systemctl --user enable --now $(BINARY).service
+	$(BIN)/$(BINARY) service install
 
 clean:
 	rm -rf $(DIST)

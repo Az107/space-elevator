@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/albertoruiz/space-elevator/internal/config"
 	"github.com/albertoruiz/space-elevator/internal/podman"
+	"github.com/spf13/cobra"
 )
 
 var infoCmd = &cobra.Command{
@@ -35,16 +35,16 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	info := map[string]any{
-		"podman_socket":    cfg.SocketPath,
-		"podman_api":       ping.APIVersion,
-		"os_type":          ping.OSType,
-		"experimental":     ping.Experimental,
-		"builder_version":  ping.BuilderVersion,
-		"data_dir":         cfg.DataDir,
-		"state_dir":        cfg.StateDir,
-		"traefik_dir":      cfg.TraefikDir,
-		"quadlet_dir":      cfg.QuadletDir,
-		"apps_root":        cfg.AppsRoot,
+		"podman_socket":   cfg.SocketPath,
+		"podman_api":      ping.APIVersion,
+		"os_type":         ping.OSType,
+		"experimental":    ping.Experimental,
+		"builder_version": ping.BuilderVersion,
+		"data_dir":        cfg.DataDir,
+		"state_dir":       cfg.StateDir,
+		"traefik_dir":     cfg.TraefikDir,
+		"quadlet_dir":     cfg.QuadletDir,
+		"apps_root":       cfg.AppsRoot,
 	}
 
 	if infoJSON {

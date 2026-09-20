@@ -7,53 +7,76 @@ routing and a REST API.
 
 - **Web/CLI/API roadmap**: see [PLAN.md](./PLAN.md) — v2 (account
   management, env/secrets, advanced builds, REST API with PATs) is done.
+- **Configuration reference**: [docs/configuration.md](./docs/configuration.md)
 - **API docs**: [docs/api.md](./docs/api.md)
 - **Writing functions**: [docs/functions.md](./docs/functions.md)
 
 ## Requirements
 
-- Go 1.22+ (build only)
+- Go 1.26+ (build only)
 - Podman 4.x with the user API socket enabled
   (`systemctl --user enable --now podman.socket`)
-- Traefik (rootful, with a file provider watching
-  `~/Infra/traefik/rootful-dynamic` by default)
+- Traefik is **optional**: with it you get automatic HTTPS and `/app/<name>/`
+  routes; without it apps are reachable on their published host ports.
 
-The podman socket is auto-detected at `/run/user/<uid>/podman/podman.sock`;
-override with `PODMAN_SOCKET=...`.
+The tool ships with neutral defaults — nothing points at a specific host. Run
+`space-elevator setup` once to configure it.
 
 ## Build & install
 
 ```sh
-make install           # builds dist/ and installs to ~/.local/bin
+go build -o dist/space-elevator ./cmd/space-elevator
+install -m 0755 dist/space-elevator ~/.local/bin/space-elevator
 ```
 
-`~/.local/bin` is chosen over `/usr/bin` on purpose: the tool runs
-rootless against your own podman socket, so a system-wide path needs root
-without buying anything. If you prefer `/usr/bin`, run
-`sudo install -m 0755 dist/space-elevator /usr/bin/` and adjust the unit
-below.
+`~/.local/bin` is chosen over `/usr/bin` on purpose: the tool runs rootless
+against your own Podman socket, so a system-wide path needs root without buying
+anything. (`make install` does the same on hosts that have `make`.)
+
+## Quick start
+
+```sh
+space-elevator setup          # guided: exposure mode, config file, admin, service
+space-elevator doctor         # verify Podman, config, Traefik, DNS, systemd
+space-elevator serve          # or: space-elevator service install
+```
+
+`setup` detects Podman, asks whether you want Traefik + HTTPS, direct host
+ports, or an existing proxy, writes a commented
+`~/.config/space-elevator/config.yaml`, optionally creates the admin account,
+and optionally installs the systemd user service. Everything is editable later
+— see [docs/configuration.md](./docs/configuration.md).
 
 ## Running as a systemd user service
 
 ```sh
-make install-service   # installs the unit + systemctl --user enable --now
+space-elevator service install --linger   # install + enable + start + boot
+space-elevator service status
+space-elevator service logs -f
+space-elevator service restart
+space-elevator service uninstall          # stops/disables/removes, keeps data
 ```
 
-The unit (`deploy/space-elevator.service`) runs
-`~/.local/bin/space-elevator serve --addr 0.0.0.0:8080` as your user,
-restarts on failure, and pulls in `podman.socket` so the dashboard comes
-up with a working runtime. With user lingering enabled
-(`loginctl enable-linger`) it starts at boot without a login session.
+The unit runs `space-elevator serve --addr <bind_addr>` as your user and pulls
+in `podman.socket`. With lingering enabled it starts at boot without a login
+session. Environment overrides can live in `~/.config/space-elevator/env`,
+which the unit loads automatically.
 
-Everyday commands:
+## Configuration
+
+All settings come from (highest priority first) CLI flags, `SPACE_ELEVATOR_*`
+environment variables, `~/.config/space-elevator/config.yaml`, then built-in
+defaults.
 
 ```sh
-systemctl --user status space-elevator    # / start / stop / restart
-journalctl --user -u space-elevator -f    # logs
+space-elevator config init --from-legacy   # write a config, seeded from an existing setup
+space-elevator config show                 # effective values + env overrides
+space-elevator config validate
+space-elevator config path
 ```
 
-To ship a new build: `make install-service` (or `make install` +
-`systemctl --user restart space-elevator`).
+Full key-by-key reference, exposure modes, and a minimal Traefik config:
+**[docs/configuration.md](./docs/configuration.md)**.
 
 ## Audit log
 
@@ -77,6 +100,11 @@ days are pruned by the hourly GC sweep.
 ## Commands
 
 ```sh
+space-elevator setup                    # guided first-run configuration
+space-elevator doctor                   # host diagnostics
+space-elevator service <verb>           # systemd user unit management
+space-elevator config <verb>            # inspect/initialize configuration
+
 space-elevator apps deploy <git-url> --name demo   # compose stack
 space-elevator apps deploy <git-url> --image node:20 \
   --build-cmd "npm ci && npm run build" --run-cmd "npm start" --port 3000
@@ -109,23 +137,13 @@ event/response contract, dependencies, and how to test an adapter locally.
 ## Layout
 
 ```
-cmd/space-elevator/   CLI entry point + commands
+cmd/space-elevator/   CLI entry point + commands (setup, doctor, service, config)
 internal/deployer/    shared deploy pipeline (CLI, web, API)
 internal/podman/      Docker-API compatible client for Podman
 internal/composer/    custom Go compose runtime
 internal/store/       SQLite (apps, env/secrets, users, API tokens)
 internal/web/         dashboard + REST API (/api/v1)
-deploy/               systemd user unit
+internal/service/     systemd user unit rendering/management
+internal/config/      layered config (flags > env > file > defaults)
+deploy/               reference systemd user unit
 ```
-
-## Quick start
-
-```sh
-./dist/space-elevator podman ps
-./dist/space-elevator podman images
-./dist/space-elevator podman info
-```
-
-Then open the dashboard (default self-route:
-`https://elevator.albruiz.dev/`) and set the admin password on first
-visit.

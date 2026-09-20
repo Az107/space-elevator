@@ -40,12 +40,31 @@ const auditRetention = 90 * 24 * time.Hour
 
 func runServe(cmd *cobra.Command, _ []string) error {
 	cfg := config.Default()
+
+	// Safety net for upgrades from a pre-config-file install: neutral defaults
+	// would otherwise stop writing routes that an existing host still needs.
+	if _, err := os.Stat(config.ConfigPath()); os.IsNotExist(err) {
+		if l := config.DetectLegacy(); l.Found && cfg.TraefikDir == "" {
+			fmt.Fprintf(os.Stderr, "WARNING: no config file, but a Traefik setup was detected at %s\n", l.TraefikDir)
+			fmt.Fprintln(os.Stderr, "         run `space-elevator config init --from-legacy` to preserve existing routes")
+		}
+	}
+
+	// The config file/env bind address is the default; an explicit --addr wins.
+	addr := serveAddr
+	if !cmd.Flags().Changed("addr") && cfg.BindAddr != "" {
+		addr = cfg.BindAddr
+	}
+	for _, i := range cfg.Validate() {
+		fmt.Fprintf(os.Stderr, "config %s: %s\n", i.Level, i.Message)
+	}
+
 	srv, err := web.NewServer(cfg)
 	if err != nil {
 		return err
 	}
 
-	if serveAutoRoute {
+	if serveAutoRoute && (cfg.PublicHost != "" || cfg.PublicPath != "") {
 		w := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
 		c := traefik.SelfRouteConfig{
 			Host:         cfg.PublicHost,
@@ -59,10 +78,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			fmt.Printf("Dashboard route: %s -> %s\n", c.SelfURL(), cfg.DashboardURL)
 			fmt.Printf("Traefik file:    %s/%s\n", cfg.TraefikDir, traefik.SelfRouteFileName)
 		}
+	} else if serveAutoRoute {
+		fmt.Fprintln(os.Stderr, "warn: no public_host configured; skipping the dashboard Traefik route (run `space-elevator setup` or set SPACE_ELEVATOR_PUBLIC_HOST)")
 	}
 
 	h := srv.Routes()
-	fmt.Printf("space-elevator listening on http://%s\n", serveAddr)
+	fmt.Printf("space-elevator listening on http://%s\n", addr)
 
 	// Heal route/runtime drift left by a crash, host event, or proxy
 	// cutover: stale routes (Traefik 502) and missing routes (404). Runs
@@ -70,7 +91,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go srv.ReconcileRoutes(cmd.Context())
 
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- http.ListenAndServe(serveAddr, h) }()
+	go func() { srvErr <- http.ListenAndServe(addr, h) }()
 
 	// Background GC: every hour, sweep orphan drop dirs / tarballs /
 	// unused images plus expired sessions so a crashed upload doesn't

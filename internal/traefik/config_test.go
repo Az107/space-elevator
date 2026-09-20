@@ -54,8 +54,25 @@ func TestRenderSelf_RejectsEmpty(t *testing.T) {
 	if _, err := RenderSelf(SelfRouteConfig{Host: "x", CertResolver: "l"}); err == nil {
 		t.Error("expected error when backend URL is empty")
 	}
-	if _, err := RenderSelf(SelfRouteConfig{Host: "x", BackendURL: "http://x"}); err == nil {
-		t.Error("expected error when cert resolver is empty")
+}
+
+func TestRenderSelf_HTTPOnlyWhenNoCertResolver(t *testing.T) {
+	got, err := RenderSelf(SelfRouteConfig{
+		Host:       "elevator.example.com",
+		BackendURL: "http://host.containers.internal:8080",
+	})
+	if err != nil {
+		t.Fatalf("RenderSelf: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "rule: Host(`elevator.example.com`)") {
+		t.Errorf("missing host rule:\n%s", s)
+	}
+	if strings.Contains(s, "certResolver") || strings.Contains(s, "websecure") {
+		t.Errorf("expected HTTP-only route with no TLS, got:\n%s", s)
+	}
+	if !strings.Contains(s, "http://host.containers.internal:8080") {
+		t.Errorf("missing backend URL:\n%s", s)
 	}
 }
 
@@ -203,4 +220,3 @@ func TestSelfRouteConfig_SelfURL(t *testing.T) {
 		}
 	}
 }
-

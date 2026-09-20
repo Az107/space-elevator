@@ -39,6 +39,12 @@ lives in SQLite; runtime state lives in Podman, addressable by the
   (Traefik `Host` + `PathPrefix`, prefix stripped). The app name in the
   URL can differ from the display name after a rename.
 - **State DB**: `~/.local/state/space-elevator/space-elevator.db`
+- **Config file**: `~/.config/space-elevator/config.yaml` (override with
+  `SPACE_ELEVATOR_CONFIG` or `--config`). Precedence is
+  flags > `SPACE_ELEVATOR_*` env > file > neutral defaults. Reference:
+  `docs/configuration.md`. **Defaults are host-agnostic** (no public host,
+  no Traefik); this host preserves its old values via
+  `space-elevator config init --from-legacy`.
 - **Apps root**: `~/apps` (drops + checkouts)
 - **Traefik dynamic dir**: `~/Infra/traefik/rootful-dynamic/*.yml`
 - **Podman socket**: auto-detected; override with `PODMAN_SOCKET=…`
@@ -84,6 +90,32 @@ that plus copying `deploy/space-elevator.service` to
 `~/.config/systemd/user/`, `systemctl --user daemon-reload`, and
 `systemctl --user enable --now space-elevator`. If you do install `make`
 (`sudo apt install make`), the targets still work unchanged.
+
+## Consumer setup commands
+
+New operator-facing commands (also usable to diagnose this host):
+
+```sh
+space-elevator setup            # huh TUI wizard; --yes + flags for non-TTY/CI
+space-elevator doctor           # Podman/config/Traefik/DB/DNS/systemd checks
+space-elevator service <verb>   # install|uninstall|start|stop|restart|status|logs
+space-elevator config <verb>    # path|show|init [--from-legacy]|validate
+```
+
+The config file is layered (flags > env > file > defaults) and generated
+with inline docs. The systemd unit is rendered from `internal/service`
+(embedded template) using the resolved `bind_addr`; `service install`
+writes it, `daemon-reload`s and optionally enables lingering.
+
+**Upgrading a pre-config-file host** (this host): neutral defaults mean the
+old hard-coded `elevator.albruiz.dev`/Traefik values must be captured
+before a restart, or routes stop being written:
+
+```sh
+space-elevator config init --from-legacy   # recovers host/resolver/gateway
+space-elevator service restart
+space-elevator doctor
+```
 
 ## Embedded assets (rebuild required)
 

@@ -17,10 +17,10 @@ var selfRouteCmd = &cobra.Command{
 var SelfRouteCmd = selfRouteCmd
 
 var (
-	selfRouteHost       string
-	selfRoutePath       string
-	selfRouteBackend    string
-	selfRouteCert       string
+	selfRouteHost    string
+	selfRoutePath    string
+	selfRouteBackend string
+	selfRouteCert    string
 )
 
 func init() {

@@ -48,3 +48,19 @@ func (c *Client) CreateNetwork(ctx context.Context, name string) (string, error)
 func (c *Client) RemoveNetwork(ctx context.Context, name string) error {
 	return c.cli.NetworkRemove(ctx, name)
 }
+
+// NetworkGateway returns the gateway IP of a named network, which is the
+// address a rootful proxy uses to reach host-published ports on a rootless
+// bridge.
+func (c *Client) NetworkGateway(ctx context.Context, name string) (string, error) {
+	n, err := c.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err != nil {
+		return "", err
+	}
+	for _, cfg := range n.IPAM.Config {
+		if cfg.Gateway != "" {
+			return cfg.Gateway, nil
+		}
+	}
+	return "", fmt.Errorf("network %q has no gateway", name)
+}
