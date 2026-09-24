@@ -201,13 +201,13 @@
         </form>
       </section>
     </aside>
-  </div>
 
-  <section class="panel files-panel">
-    <div class="panel-heading">
-      <h2>Files</h2>
-    </div>
-    <p class="panel-desc">Source from the {{ .App.SourceType }} deploy. Text files open in a new tab.</p>
-    <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
-  </section>
+    <section class="panel files-panel">
+      <div class="panel-heading">
+        <h2>Files</h2>
+      </div>
+      <p class="panel-desc">Source from the {{ .App.SourceType }} deploy. Text files open in a new tab.</p>
+      <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
+    </section>
+  </div>
 </section>
