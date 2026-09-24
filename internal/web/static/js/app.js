@@ -116,19 +116,27 @@ document.addEventListener('submit', e => {
   const CHECK = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
   document.addEventListener('click', e => {
     const btn = e.target.closest('[data-copy]');
-    if (!btn) return;
+    if (!btn || btn.dataset.copied) return;
     const text = btn.getAttribute('data-copy') || '';
+    const icon = btn.querySelector('.ico');
+    const label = btn.querySelector('.btn-label');
+    const prevIcon = icon ? icon.outerHTML : '';
+    const prevLabel = label ? label.textContent : '';
+    const prevLabelAttr = btn.getAttribute('aria-label');
     const done = () => {
-      if (btn.dataset.copied) return;
       btn.dataset.copied = '1';
-      const prev = btn.innerHTML;
       btn.classList.add('copied');
-      btn.innerHTML = CHECK;
+      if (icon) icon.outerHTML = CHECK;
+      if (label) label.textContent = 'Copied';
+      if (prevLabelAttr) btn.setAttribute('aria-label', 'Copied');
       setTimeout(() => {
         btn.classList.remove('copied');
-        btn.innerHTML = prev;
+        const currentIcon = btn.querySelector('.ico');
+        if (currentIcon && prevIcon) currentIcon.outerHTML = prevIcon;
+        if (label) label.textContent = prevLabel;
+        if (prevLabelAttr) btn.setAttribute('aria-label', prevLabelAttr);
         delete btn.dataset.copied;
-      }, 1400);
+      }, 1600);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
@@ -167,19 +175,35 @@ document.addEventListener('submit', e => {
   });
 })();
 
-// Rename modal on the app detail page.
+// Inline rename on the app detail title: activating the name swaps in an
+// input in place instead of opening a modal. Enter saves (native form
+// submit), Esc cancels and returns focus to the title.
 (function () {
-  const dlg = document.getElementById('rename-dialog');
-  if (!dlg) return;
-  const open = document.querySelector('[data-rename-open]');
-  const close = dlg.querySelector('[data-rename-close]');
-  if (open) open.addEventListener('click', () => {
-    dlg.showModal();
-    const input = dlg.querySelector('input[name="name"]');
-    if (input) { input.focus(); input.select(); }
+  const display = document.getElementById('title-display');
+  const form = document.getElementById('rename-form');
+  const input = form ? form.querySelector('input[name="name"]') : null;
+  const open = document.getElementById('rename-open');
+  const cancel = document.getElementById('rename-cancel');
+  if (!display || !form || !input || !open) return;
+
+  function startEdit() {
+    display.hidden = true;
+    form.hidden = false;
+    input.value = input.defaultValue;
+    input.focus();
+    input.select();
+  }
+  function cancelEdit() {
+    form.hidden = true;
+    display.hidden = false;
+    open.focus();
+  }
+
+  open.addEventListener('click', startEdit);
+  if (cancel) cancel.addEventListener('click', cancelEdit);
+  form.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
   });
-  if (close) close.addEventListener('click', () => dlg.close());
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
 })();
 
 // Highlight the matching nav items (topnav + mobile bottom bar).
@@ -190,7 +214,10 @@ document.addEventListener('submit', e => {
   else if (p.startsWith('/apps')) key = 'apps';
   else if (p.startsWith('/settings')) key = 'settings';
   if (!key) return;
-  document.querySelectorAll('[data-nav="' + key + '"]').forEach(a => a.classList.add('current'));
+  document.querySelectorAll('[data-nav="' + key + '"]').forEach(a => {
+    a.classList.add('current');
+    a.setAttribute('aria-current', 'page');
+  });
 })();
 
 // Drop zone for app deployments via tarball upload.

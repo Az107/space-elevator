@@ -1,24 +1,24 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/albertoruiz/space-elevator/internal/store"
+	"github.com/albertoruiz/space-elevator/internal/audit"
+	"github.com/albertoruiz/space-elevator/internal/tokenmanager"
 )
 
-// apiAuthStore builds a middleware-backed handler against a fresh
-// store, returning what's needed to exercise token auth end to end.
-func apiAuthStore(t *testing.T) *Server {
+func apiAuthServer(t *testing.T, handler http.HandlerFunc) *Server {
 	t.Helper()
-	st, err := store.Open(t.TempDir() + "/test.db")
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	tm, err := tokenmanager.New(ts.URL, "app_test", "cs_test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-	return &Server{Store: st}
+	return &Server{TokenManager: tm}
 }
 
 func hitAPI(s *Server, rawToken string) int {
@@ -33,45 +33,69 @@ func hitAPI(s *Server, rawToken string) int {
 	return rr.Code
 }
 
+func validTokenHandler(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token != "tm_test_secret" {
+		w.Header().Set("X-Error", "invalid_token")
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("X-Token-Id", "tok_1")
+	w.Header().Set("X-Token-Name", "ci")
+	w.Header().Set("X-Token-App", "space-elevator")
+	w.Header().Set("X-Token-Expires-At", "never")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func TestRequireAPIToken(t *testing.T) {
-	s := apiAuthStore(t)
+	s := apiAuthServer(t, validTokenHandler)
 
 	// No header → 401 with a challenge.
 	if code := hitAPI(s, ""); code != http.StatusUnauthorized {
 		t.Errorf("no token: %d, want 401", code)
 	}
-	// Garbage token → 401.
-	if code := hitAPI(s, "se_garbage"); code != http.StatusUnauthorized {
+	// Garbage and legacy tokens are rejected by Token-Manager.
+	if code := hitAPI(s, "tm_garbage"); code != http.StatusUnauthorized {
 		t.Errorf("garbage token: %d, want 401", code)
 	}
-	// Token without the se_ marker → 401 (rejected before hashing).
-	if code := hitAPI(s, "plainvalue"); code != http.StatusUnauthorized {
-		t.Errorf("unprefixed token: %d, want 401", code)
+	if code := hitAPI(s, "se_legacy"); code != http.StatusUnauthorized {
+		t.Errorf("legacy token: %d, want 401", code)
 	}
-	// Valid token passes…
-	_, raw, err := s.Store.MintAPIToken(t.Context(), "ci", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code := hitAPI(s, raw); code != http.StatusTeapot {
+	// A valid token passes through the middleware.
+	if code := hitAPI(s, "tm_test_secret"); code != http.StatusTeapot {
 		t.Errorf("valid token: %d, want %d", code, http.StatusTeapot)
-	}
-	// …and the raw token keeps working (touch recorded).
-	toks, _ := s.Store.ListAPITokens(t.Context())
-	if toks[0].LastUsedAt == nil {
-		t.Error("last_used_at should be recorded on first use")
 	}
 }
 
-func TestRequireAPITokenExpired(t *testing.T) {
-	s := apiAuthStore(t)
-	past := time.Now().Add(-time.Hour)
-	_, raw, err := s.Store.MintAPIToken(t.Context(), "old", &past)
-	if err != nil {
-		t.Fatal(err)
+func TestRequireAPITokenManagerUnavailable(t *testing.T) {
+	s := &Server{}
+	if code := hitAPI(s, "tm_any"); code != http.StatusServiceUnavailable {
+		t.Errorf("unconfigured manager: %d, want 503", code)
 	}
-	if code := hitAPI(s, raw); code != http.StatusUnauthorized {
-		t.Errorf("expired token: %d, want 401", code)
+
+	s = apiAuthServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	if code := hitAPI(s, "tm_any"); code != http.StatusServiceUnavailable {
+		t.Errorf("unavailable manager: %d, want 503", code)
+	}
+}
+
+func TestRequireAPITokenActorMetadata(t *testing.T) {
+	s := apiAuthServer(t, validTokenHandler)
+	var got audit.Actor
+	h := s.requireAPIToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = audit.ActorFromCtx(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest("GET", "/api/v1/apps", nil)
+	req.Header.Set("Authorization", "Bearer tm_test_secret")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if got.Type != "token" || got.ID != "tok_1" || got.Label != "ci" {
+		t.Errorf("actor = %+v, want token/tok_1/ci", got)
 	}
 }
 
@@ -84,8 +108,8 @@ func TestBearerTokenParsing(t *testing.T) {
 	if bearerToken(req) != "" {
 		t.Error("non-bearer scheme must yield empty token")
 	}
-	req.Header.Set("Authorization", "Bearer se_abc")
-	if bearerToken(req) != "se_abc" {
+	req.Header.Set("Authorization", "Bearer tm_abc")
+	if bearerToken(req) != "tm_abc" {
 		t.Errorf("got %q", bearerToken(req))
 	}
 }

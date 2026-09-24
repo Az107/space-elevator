@@ -57,6 +57,13 @@ type Config struct {
 	// InsecureCookies disables the Secure flag on the session cookie. Only for
 	// plain-HTTP local testing.
 	InsecureCookies bool
+	// TokenManagerURL, TokenManagerClientID, and TokenManagerClientSecret
+	// configure the external service that validates REST API tokens. They
+	// must either all be set or all be empty; empty disables API token
+	// authentication rather than falling back to a local store.
+	TokenManagerURL          string
+	TokenManagerClientID     string
+	TokenManagerClientSecret string
 }
 
 // BuiltinDefaults returns the neutral, host-agnostic defaults. It does not
@@ -68,23 +75,26 @@ func BuiltinDefaults() *Config {
 		home = "/root"
 	}
 	return &Config{
-		BindAddr:           "127.0.0.1:8080",
-		SocketPath:         defaultSocket(),
-		DataDir:            filepath.Join(home, ".local", "share", "space-elevator"),
-		StateDir:           filepath.Join(home, ".local", "state", "space-elevator"),
-		TraefikDir:         "",
-		PublicHost:         "",
-		PublicPath:         "",
-		DashboardURL:       "",
-		CertResolver:       "",
-		QuadletDir:         filepath.Join(home, ".config", "containers", "systemd"),
-		AppsRoot:           filepath.Join(home, "apps"),
-		DefaultNetwork:     "space-elevator",
-		AppPathPrefix:      "/app/",
-		RootlessGateway:    "",
-		DefaultMemoryBytes: 512 << 20,
-		DefaultPidsLimit:   256,
-		InsecureCookies:    false,
+		BindAddr:                 "127.0.0.1:8080",
+		SocketPath:               defaultSocket(),
+		DataDir:                  filepath.Join(home, ".local", "share", "space-elevator"),
+		StateDir:                 filepath.Join(home, ".local", "state", "space-elevator"),
+		TraefikDir:               "",
+		PublicHost:               "",
+		PublicPath:               "",
+		DashboardURL:             "",
+		CertResolver:             "",
+		QuadletDir:               filepath.Join(home, ".config", "containers", "systemd"),
+		AppsRoot:                 filepath.Join(home, "apps"),
+		DefaultNetwork:           "space-elevator",
+		AppPathPrefix:            "/app/",
+		RootlessGateway:          "",
+		DefaultMemoryBytes:       512 << 20,
+		DefaultPidsLimit:         256,
+		InsecureCookies:          false,
+		TokenManagerURL:          "",
+		TokenManagerClientID:     "",
+		TokenManagerClientSecret: "",
 	}
 }
 
@@ -182,6 +192,25 @@ func (c *Config) finalize() {
 	}
 }
 
+// TokenManagerConfigured reports whether the external API authenticator is
+// fully configured. It is intentionally all-or-nothing to prevent a partial
+// configuration from silently accepting local credentials.
+func (c *Config) TokenManagerConfigured() bool {
+	return c.TokenManagerURL != "" && c.TokenManagerClientID != "" && c.TokenManagerClientSecret != ""
+}
+
+// TokenManagerPartiallyConfigured reports whether any Token-Manager setting
+// was provided without completing the required credential set.
+func (c *Config) TokenManagerPartiallyConfigured() bool {
+	set := 0
+	for _, value := range []string{c.TokenManagerURL, c.TokenManagerClientID, c.TokenManagerClientSecret} {
+		if value != "" {
+			set++
+		}
+	}
+	return set > 0 && set < 3
+}
+
 // Issue is a validation finding. Level is "error" or "warning".
 type Issue struct {
 	Level   string
@@ -217,6 +246,9 @@ func (c *Config) Validate() []Issue {
 	}
 	if c.PublicHost == "" && c.PublicPath != "" {
 		out = append(out, Issue{"warning", "public_path has no effect without public_host"})
+	}
+	if c.TokenManagerPartiallyConfigured() {
+		out = append(out, Issue{"error", "token_manager_url, token_manager_client_id, and token_manager_client_secret must be set together"})
 	}
 	return out
 }
@@ -357,6 +389,9 @@ func applyEnv(c *Config) {
 	if v, ok := os.LookupEnv("SPACE_ELEVATOR_INSECURE_COOKIES"); ok {
 		c.InsecureCookies = v != ""
 	}
+	envStr(&c.TokenManagerURL, "SPACE_ELEVATOR_TOKEN_MANAGER_URL")
+	envStr(&c.TokenManagerClientID, "SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID")
+	envStr(&c.TokenManagerClientSecret, "SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET")
 }
 
 // EnvKeys lists every environment variable Load honors, for `config show`.
@@ -379,4 +414,7 @@ var EnvKeys = []string{
 	"SPACE_ELEVATOR_MEMORY_LIMIT",
 	"SPACE_ELEVATOR_PIDS_LIMIT",
 	"SPACE_ELEVATOR_INSECURE_COOKIES",
+	"SPACE_ELEVATOR_TOKEN_MANAGER_URL",
+	"SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID",
+	"SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET",
 }

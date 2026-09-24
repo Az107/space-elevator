@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	stdlog "log"
 	"net/http"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"github.com/albertoruiz/space-elevator/internal/deployer"
 	"github.com/albertoruiz/space-elevator/internal/podman"
 	"github.com/albertoruiz/space-elevator/internal/store"
+	"github.com/albertoruiz/space-elevator/internal/tokenmanager"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
 )
 
@@ -30,18 +32,19 @@ import (
 const maxRequestBody = 128 << 20
 
 type Server struct {
-	Cfg       *config.Config
-	Store     *store.Store
-	Renderer  *Renderer
-	Cli       *podman.Client
-	Runtime   *composer.Runtime
-	Deployer  *deployer.Deployer
-	TraefikW  *traefik.Writer
-	CSRF      *CSRF
-	Audit     *audit.Logger
-	BuildLogs *buildLogRegistry
-	logins    *loginLimiter
-	deploySem chan struct{}
+	Cfg          *config.Config
+	Store        *store.Store
+	Renderer     *Renderer
+	Cli          *podman.Client
+	Runtime      *composer.Runtime
+	Deployer     *deployer.Deployer
+	TraefikW     *traefik.Writer
+	CSRF         *CSRF
+	Audit        *audit.Logger
+	TokenManager *tokenmanager.Client
+	BuildLogs    *buildLogRegistry
+	logins       *loginLimiter
+	deploySem    chan struct{}
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -73,19 +76,31 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		CertResolver:    cfg.CertResolver,
 		Audit:           au,
 	})
+	var tm *tokenmanager.Client
+	if cfg.TokenManagerConfigured() {
+		tm, err = tokenmanager.New(cfg.TokenManagerURL, cfg.TokenManagerClientID, cfg.TokenManagerClientSecret)
+		if err != nil {
+			st.Close()
+			return nil, fmt.Errorf("configure Token-Manager: %w", err)
+		}
+	} else if cfg.TokenManagerPartiallyConfigured() {
+		st.Close()
+		return nil, fmt.Errorf("configure Token-Manager: URL, client ID, and client secret must be set together")
+	}
 	return &Server{
-		Cfg:       cfg,
-		Store:     st,
-		Renderer:  r,
-		Cli:       cli,
-		Runtime:   rt,
-		Deployer:  dep,
-		TraefikW:  tw,
-		CSRF:      csrf,
-		Audit:     au,
-		BuildLogs: newBuildLogRegistry(),
-		logins:    newLoginLimiter(),
-		deploySem: make(chan struct{}, 2),
+		Cfg:          cfg,
+		Store:        st,
+		Renderer:     r,
+		Cli:          cli,
+		Runtime:      rt,
+		Deployer:     dep,
+		TraefikW:     tw,
+		CSRF:         csrf,
+		Audit:        au,
+		TokenManager: tm,
+		BuildLogs:    newBuildLogRegistry(),
+		logins:       newLoginLimiter(),
+		deploySem:    make(chan struct{}, 2),
 	}, nil
 }
 
@@ -162,8 +177,6 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/apps/{name}/secrets/{key}/delete", s.handleAppSecretDelete)
 		r.Get("/settings", s.handleSettings)
 		r.Post("/settings/creds", s.handleSettingsCreds)
-		r.Post("/settings/tokens", s.handleSettingsTokens)
-		r.Post("/settings/tokens/{id}/delete", s.handleSettingsTokenDelete)
 		r.Post("/settings/account/username", s.handleAccountUsername)
 		r.Post("/settings/account/password", s.handleAccountPassword)
 	})

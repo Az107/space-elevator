@@ -18,6 +18,7 @@ import (
 	"github.com/albertoruiz/space-elevator/internal/podman"
 	"github.com/albertoruiz/space-elevator/internal/service"
 	"github.com/albertoruiz/space-elevator/internal/store"
+	"github.com/albertoruiz/space-elevator/internal/tokenmanager"
 	"github.com/albertoruiz/space-elevator/internal/traefik"
 )
 
@@ -63,6 +64,25 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			st = "fail"
 		}
 		add(check{"config " + i.Level, st, i.Message})
+	}
+
+	// External REST API authentication.
+	if cfg.TokenManagerConfigured() {
+		tm, err := tokenmanager.New(cfg.TokenManagerURL, cfg.TokenManagerClientID, cfg.TokenManagerClientSecret)
+		if err != nil {
+			add(check{"token manager", "fail", err.Error()})
+		} else {
+			healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err := tm.Health(healthCtx)
+			cancel()
+			if err != nil {
+				add(check{"token manager", "fail", err.Error()})
+			} else {
+				add(check{"token manager", "ok", cfg.TokenManagerURL})
+			}
+		}
+	} else {
+		add(check{"token manager", "warn", "not configured; REST API requests will return 503"})
 	}
 
 	// Directories / state DB.

@@ -143,10 +143,40 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
-func TestExplicitMissingPathIsError(t *testing.T) {
-	_, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
-	if err == nil {
-		t.Fatal("expected an error for an explicit missing config path")
+func TestTokenManagerConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "token_manager_url: http://manager.example\n" +
+		"token_manager_client_id: app_space\n" +
+		"token_manager_client_secret: cs_secret\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TokenManagerConfigured() || cfg.TokenManagerClientSecret != "cs_secret" {
+		t.Fatalf("Token-Manager config = %+v", cfg)
+	}
+
+	cfg.TokenManagerClientSecret = ""
+	if !cfg.TokenManagerPartiallyConfigured() {
+		t.Fatal("partial Token-Manager config was not detected")
+	}
+	if len(cfg.Errors()) == 0 {
+		t.Fatal("partial Token-Manager config should be an error")
+	}
+}
+
+func TestTokenManagerEnvPrecedence(t *testing.T) {
+	t.Setenv("SPACE_ELEVATOR_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("SPACE_ELEVATOR_TOKEN_MANAGER_URL", "http://env-manager")
+	t.Setenv("SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID", "env-id")
+	t.Setenv("SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET", "env-secret")
+	cfg := MustLoad("")
+	if cfg.TokenManagerURL != "http://env-manager" || cfg.TokenManagerClientID != "env-id" || cfg.TokenManagerClientSecret != "env-secret" {
+		t.Fatalf("env Token-Manager config = %+v", cfg)
 	}
 }
 

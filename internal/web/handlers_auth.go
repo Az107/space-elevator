@@ -11,6 +11,10 @@ import (
 type authData struct {
 	PageData
 	Error string
+	// Username echoes back what was typed so a failed login doesn't
+	// force retyping it. Never prefill this with a stored value: the
+	// field must stay editable, and a rename must not lock anyone out.
+	Username string
 }
 
 func (a authData) AuthedOK() bool   { return a.Authed }
@@ -86,6 +90,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.Renderer.Render(w, r, "login.html", authData{
 			PageData: PageData{Title: "Sign in"},
 			Error:    "Too many failed attempts. Try again in a few minutes.",
+			Username: username,
 		})
 		return
 	}
@@ -95,13 +100,13 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
 		s.logins.fail(ip)
 		s.recordAudit(r, audit.ActionLogin, "user", "", username, audit.OutcomeFailure, "unknown username")
-		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg()})
+		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg(), Username: username})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
 		s.logins.fail(ip)
 		s.recordAudit(r, audit.ActionLogin, "user", u.ID, u.Username, audit.OutcomeFailure, "incorrect password")
-		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg()})
+		s.Renderer.Render(w, r, "login.html", authData{PageData: PageData{Title: "Sign in"}, Error: invalidPasswordMsg(), Username: username})
 		return
 	}
 	s.logins.success(ip)

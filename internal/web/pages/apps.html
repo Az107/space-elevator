@@ -25,13 +25,17 @@
       <p>Lift your first app: deploy from git or an archive, or drop a tarball above.</p>
       <a href="/apps/new" class="btn">{{ template "i-plus" }}<span class="btn-label">New app</span></a>
     </div>
-    <svg class="shaft" viewBox="0 0 150 190" fill="none" aria-hidden="true">
-      <ellipse cx="75" cy="38" rx="64" ry="16" stroke="var(--line)" stroke-dasharray="3 6" stroke-linecap="round"/>
-      <circle cx="139" cy="38" r="2.5" fill="var(--amber)"/>
-      <path d="M75 190V46" stroke="var(--muted)" stroke-width="1.5" stroke-linecap="round"/>
-      <rect x="62" y="30" width="26" height="17" rx="3.5" fill="var(--amber)"/>
-      <path d="M30 187h90" stroke="var(--line)" stroke-width="2" stroke-linecap="round"/>
-    </svg>
+    <div class="art" aria-hidden="true">
+      <svg viewBox="0 0 220 140" fill="none">
+        <g class="orbit">
+          <circle cx="110" cy="70" r="56" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 6"/>
+          <circle cx="166" cy="70" r="4" fill="currentColor"/>
+        </g>
+        <circle cx="110" cy="70" r="34" stroke="currentColor" stroke-width="1.2"/>
+        <circle class="core" cx="110" cy="70" r="3.4" fill="var(--amber)"/>
+        <circle cx="110" cy="36" r="2.4" fill="currentColor"/>
+      </svg>
+    </div>
   </div>
   {{ else }}
   <div class="table-tools">
@@ -46,48 +50,49 @@
         <tr><th>Name</th><th>Status</th><th>Source</th><th>Domains</th><th>Created</th><th></th></tr>
       </thead>
       <tbody>
-        {{ range .Apps }}
-        <tr>
-          <td class="app-name" data-label="Name"><a href="/apps/{{ .Name }}">{{ .Name }}</a></td>
-          <td data-label="Status"><span class="lamp lamp-{{ .Status }}"><i></i>{{ .Status }}</span></td>
+        {{ range $i, $app := .Apps }}
+        <tr style="--row-index: {{ if lt $i 12 }}{{ $i }}{{ else }}12{{ end }}">
+          <td class="app-name" data-label="Name"><a href="/apps/{{ $app.Name }}">{{ $app.Name }}</a></td>
+          <td data-label="Status"><span class="lamp lamp-{{ $app.Status }}"><i></i>{{ $app.Status }}</span></td>
           <td class="src" data-label="Source">
-            <span class="src-badge src-{{ .SourceType }}">
-              {{ if eq .SourceType "git" }}
+            <span class="src-badge src-{{ $app.SourceType }}">
+              {{ if eq $app.SourceType "git" }}
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
               {{ else }}
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
               {{ end }}
-              <span class="mono">{{ .SourceType }}</span>
+              <span class="mono">{{ $app.SourceType }}</span>
             </span>
-            {{ if ne .Kind "web" }}<span class="kind-badge kind-{{ .Kind }}">{{ .Kind }}</span>{{ end }}
-            {{ if .SourceRef }}<span class="mono">{{ .SourceRef }}</span>{{ end }}
+            {{ if ne $app.Kind "web" }}<span class="kind-badge kind-{{ $app.Kind }}">{{ $app.Kind }}</span>{{ end }}
+            {{ if $app.SourceRef }}<span class="mono">{{ $app.SourceRef }}</span>{{ end }}
           </td>
           <td class="cell-domains" data-label="Domains">
-            {{ $d := index $.DomainsByApp .ID }}
+            {{ $d := index $.DomainsByApp $app.ID }}
             {{ if $d }}{{ range $d }}<code>{{ . }}</code> {{ end }}{{ else }}<span class="muted">none</span>{{ end }}
           </td>
-          <td class="cell-date" data-label="Created">{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
+          <td class="cell-date" data-label="Created">{{ $app.CreatedAt.Format "2006-01-02 15:04" }}</td>
           <td class="row-actions">
             <div class="actions">
-              {{ if eq .Status "running" }}
-              <form action="/apps/{{ .Name }}/stop" method="post"
-                    data-confirm="Stop {{ .Name }}?" data-busy>
+              {{ if eq $app.Status "running" }}
+              <form action="/apps/{{ $app.Name }}/stop" method="post"
+                    data-confirm="Stop {{ $app.Name }}?" data-confirm-title="Stop app" data-busy>
                 <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                 <button class="btn subtle sm">{{ template "i-stop" }}<span class="btn-label">Stop</span></button>
               </form>
-              {{ else if eq .Status "stopped" }}
-              <form action="/apps/{{ .Name }}/start" method="post" data-busy>
+              {{ else if eq $app.Status "stopped" }}
+              <form action="/apps/{{ $app.Name }}/start" method="post" data-busy>
                 <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                 <button class="btn subtle sm">{{ template "i-play" }}<span class="btn-label">Start</span></button>
               </form>
               {{ end }}
-              <form action="/apps/{{ .Name }}/restart" method="post" data-busy>
+              <form action="/apps/{{ $app.Name }}/restart" method="post" data-busy>
                 <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                 <button class="btn subtle sm">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
               </form>
               <span class="sep" aria-hidden="true"></span>
-              <form action="/apps/{{ .Name }}/remove" method="post"
-                    data-confirm="Remove {{ .Name }}? This cannot be undone." data-confirm-variant="danger" data-busy>
+              <form action="/apps/{{ $app.Name }}/remove" method="post"
+                    data-confirm="Remove {{ $app.Name }}? This cannot be undone."
+                    data-confirm-title="Remove app" data-confirm-variant="danger" data-busy>
                 <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                 <button class="btn subtle danger sm">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
               </form>

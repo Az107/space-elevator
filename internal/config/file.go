@@ -14,23 +14,26 @@ import (
 // fileConfig mirrors Config for YAML, using pointers so an explicitly empty
 // value (e.g. `public_host: ""`) is distinguishable from an absent key.
 type fileConfig struct {
-	BindAddr        *string `yaml:"bind_addr"`
-	SocketPath      *string `yaml:"socket_path"`
-	DataDir         *string `yaml:"data_dir"`
-	StateDir        *string `yaml:"state_dir"`
-	TraefikDir      *string `yaml:"traefik_dir"`
-	PublicHost      *string `yaml:"public_host"`
-	PublicPath      *string `yaml:"public_path"`
-	DashboardURL    *string `yaml:"dashboard_url"`
-	CertResolver    *string `yaml:"cert_resolver"`
-	QuadletDir      *string `yaml:"quadlet_dir"`
-	AppsRoot        *string `yaml:"apps_root"`
-	DefaultNetwork  *string `yaml:"default_network"`
-	AppPathPrefix   *string `yaml:"app_path_prefix"`
-	RootlessGateway *string `yaml:"rootless_gateway"`
-	MemoryLimit     *string `yaml:"memory_limit"`
-	PidsLimit       *int64  `yaml:"pids_limit"`
-	InsecureCookies *bool   `yaml:"insecure_cookies"`
+	BindAddr                 *string `yaml:"bind_addr"`
+	SocketPath               *string `yaml:"socket_path"`
+	DataDir                  *string `yaml:"data_dir"`
+	StateDir                 *string `yaml:"state_dir"`
+	TraefikDir               *string `yaml:"traefik_dir"`
+	PublicHost               *string `yaml:"public_host"`
+	PublicPath               *string `yaml:"public_path"`
+	DashboardURL             *string `yaml:"dashboard_url"`
+	CertResolver             *string `yaml:"cert_resolver"`
+	QuadletDir               *string `yaml:"quadlet_dir"`
+	AppsRoot                 *string `yaml:"apps_root"`
+	DefaultNetwork           *string `yaml:"default_network"`
+	AppPathPrefix            *string `yaml:"app_path_prefix"`
+	RootlessGateway          *string `yaml:"rootless_gateway"`
+	MemoryLimit              *string `yaml:"memory_limit"`
+	PidsLimit                *int64  `yaml:"pids_limit"`
+	InsecureCookies          *bool   `yaml:"insecure_cookies"`
+	TokenManagerURL          *string `yaml:"token_manager_url"`
+	TokenManagerClientID     *string `yaml:"token_manager_client_id"`
+	TokenManagerClientSecret *string `yaml:"token_manager_client_secret"`
 }
 
 func applyYAML(c *Config, data []byte) error {
@@ -89,6 +92,15 @@ func applyYAML(c *Config, data []byte) error {
 	if f.InsecureCookies != nil {
 		c.InsecureCookies = *f.InsecureCookies
 	}
+	if f.TokenManagerURL != nil {
+		c.TokenManagerURL = *f.TokenManagerURL
+	}
+	if f.TokenManagerClientID != nil {
+		c.TokenManagerClientID = *f.TokenManagerClientID
+	}
+	if f.TokenManagerClientSecret != nil {
+		c.TokenManagerClientSecret = *f.TokenManagerClientSecret
+	}
 	return nil
 }
 
@@ -105,7 +117,13 @@ func (c *Config) Save(path string) error {
 	if err := c.SaveTo(&b); err != nil {
 		return err
 	}
-	return os.WriteFile(path, b.Bytes(), 0o644)
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		return err
+	}
+	// Save may be replacing a pre-existing config created with the old
+	// world-readable mode. Ensure the file remains private after adding
+	// Token-Manager credentials.
+	return os.Chmod(path, 0o600)
 }
 
 // SaveTo renders the commented config to w without touching the filesystem.
@@ -123,27 +141,33 @@ type tmplData struct {
 	MemoryLimit                             string
 	PidsLimit                               int64
 	InsecureCookies                         bool
+	TokenManagerURL                         string
+	TokenManagerClientID                    string
+	TokenManagerClientSecret                string
 }
 
 func templateData(c *Config) tmplData {
 	return tmplData{
-		BindAddr:        c.BindAddr,
-		SocketPath:      c.SocketPath,
-		DataDir:         c.DataDir,
-		StateDir:        c.StateDir,
-		TraefikDir:      c.TraefikDir,
-		PublicHost:      c.PublicHost,
-		PublicPath:      c.PublicPath,
-		DashboardURL:    c.DashboardURL,
-		CertResolver:    c.CertResolver,
-		QuadletDir:      c.QuadletDir,
-		AppsRoot:        c.AppsRoot,
-		DefaultNetwork:  c.DefaultNetwork,
-		AppPathPrefix:   c.AppPathPrefix,
-		RootlessGateway: c.RootlessGateway,
-		MemoryLimit:     FormatSizeBytes(c.DefaultMemoryBytes),
-		PidsLimit:       c.DefaultPidsLimit,
-		InsecureCookies: c.InsecureCookies,
+		BindAddr:                 c.BindAddr,
+		SocketPath:               c.SocketPath,
+		DataDir:                  c.DataDir,
+		StateDir:                 c.StateDir,
+		TraefikDir:               c.TraefikDir,
+		PublicHost:               c.PublicHost,
+		PublicPath:               c.PublicPath,
+		DashboardURL:             c.DashboardURL,
+		CertResolver:             c.CertResolver,
+		QuadletDir:               c.QuadletDir,
+		AppsRoot:                 c.AppsRoot,
+		DefaultNetwork:           c.DefaultNetwork,
+		AppPathPrefix:            c.AppPathPrefix,
+		RootlessGateway:          c.RootlessGateway,
+		MemoryLimit:              FormatSizeBytes(c.DefaultMemoryBytes),
+		PidsLimit:                c.DefaultPidsLimit,
+		InsecureCookies:          c.InsecureCookies,
+		TokenManagerURL:          c.TokenManagerURL,
+		TokenManagerClientID:     c.TokenManagerClientID,
+		TokenManagerClientSecret: c.TokenManagerClientSecret,
 	}
 }
 
@@ -238,4 +262,19 @@ pids_limit: {{.PidsLimit}}
 # testing; leave false in production.
 # env: SPACE_ELEVATOR_INSECURE_COOKIES
 insecure_cookies: {{.InsecureCookies}}
+
+# External Token-Manager base URL. Leave all three Token-Manager values empty
+# to keep local dashboard access working while the REST API remains disabled.
+# The service validates /api/v1 bearer tokens; space-elevator never stores
+# their plaintext.
+# env: SPACE_ELEVATOR_TOKEN_MANAGER_URL
+token_manager_url: {{q .TokenManagerURL}}
+
+# Client ID and secret for the app registered in Token-Manager. Create an
+# app named space-elevator and copy its one-time credentials here. Keep this
+# file private; the secret is redacted by config show.
+# env: SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID
+token_manager_client_id: {{q .TokenManagerClientID}}
+# env: SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET
+token_manager_client_secret: {{q .TokenManagerClientSecret}}
 `))

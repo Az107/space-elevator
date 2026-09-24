@@ -1,21 +1,29 @@
 # space-elevator REST API (v1)
 
 Single-user, full-access REST API mirroring the dashboard. Authenticated
-with Personal Access Tokens generated on the dashboard's Settings page
-(Settings → API tokens → Generate token). The raw token is shown **once**
-at creation; store it securely.
+with API tokens issued and managed by the external Token-Manager service.
+Space-elevator validates each bearer token through Token-Manager; it does not
+store or create API tokens locally. The raw token is shown once by
+Token-Manager; store it securely.
 
 ## Authentication
 
 ```
-Authorization: Bearer se_<token>
+Authorization: Bearer tm_<env>_<token>
 ```
 
-Missing/invalid/expired tokens get `401` with a `WWW-Authenticate: Bearer`
-challenge. Tokens carry no scopes and act as full account access; give
-each integration its own named token and revoke it when done.
+The token is validated by Token-Manager against the client app configured in
+space-elevator. Missing, invalid, expired, or revoked tokens get `401` with a
+`WWW-Authenticate: Bearer` challenge. If Token-Manager is unavailable, not
+configured, or its client credentials are invalid, requests fail closed with
+`503`; space-elevator does not fall back to local tokens. Tokens carry no
+scopes and act as full account access; give each integration its own named
+token and revoke it in Token-Manager when done.
 
-Token generation and revocation is web-only in v1.
+Create the Token-Manager app named `space-elevator` and configure
+`token_manager_url`, `token_manager_client_id`, and
+`token_manager_client_secret` in space-elevator. Token generation and
+revocation happen in Token-Manager, not in the space-elevator dashboard.
 
 ## Conventions
 
@@ -163,7 +171,7 @@ GET /api/v1/apps/my-api
 ## Example session
 
 ```sh
-TOKEN=se_xxx   # from the dashboard
+TOKEN=tm_live_xxx   # created in Token-Manager
 API=https://elevator.albruiz.dev/api/v1   # or the dashboard origin
 
 curl -s -H "Authorization: Bearer $TOKEN" $API/apps

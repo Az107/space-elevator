@@ -6,7 +6,8 @@ serverless-style functions from git or an uploaded archive, get Traefik
 routing and a REST API.
 
 - **Web/CLI/API roadmap**: see [PLAN.md](./PLAN.md) — v2 (account
-  management, env/secrets, advanced builds, REST API with PATs) is done.
+  management, env/secrets, advanced builds, REST API) is done. API tokens are
+  managed by the external Token-Manager service.
 - **Configuration reference**: [docs/configuration.md](./docs/configuration.md)
 - **API docs**: [docs/api.md](./docs/api.md)
 - **Writing functions**: [docs/functions.md](./docs/functions.md)
@@ -141,9 +142,10 @@ cmd/space-elevator/   CLI entry point + commands (setup, doctor, service, config
 internal/deployer/    shared deploy pipeline (CLI, web, API)
 internal/podman/      Docker-API compatible client for Podman
 internal/composer/    custom Go compose runtime
-internal/store/       SQLite (apps, env/secrets, users, API tokens)
+internal/store/       SQLite (apps, env/secrets, users)
 internal/web/         dashboard + REST API (/api/v1)
 internal/service/     systemd user unit rendering/management
 internal/config/      layered config (flags > env > file > defaults)
+internal/tokenmanager/ external API token validation client
 deploy/               reference systemd user unit
 ```

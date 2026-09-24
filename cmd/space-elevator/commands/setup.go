@@ -33,20 +33,23 @@ var SetupCmd = &cobra.Command{
 }
 
 var (
-	setupYes           bool
-	setupMode          string
-	setupHost          string
-	setupAddr          string
-	setupTraefikDir    string
-	setupCertResolver  string
-	setupAppsRoot      string
-	setupGateway       string
-	setupNoUser        bool
-	setupNoService     bool
-	setupLinger        bool
-	setupUsername      string
-	setupPasswordStdin bool
-	setupForce         bool
+	setupYes                     bool
+	setupMode                    string
+	setupHost                    string
+	setupAddr                    string
+	setupTraefikDir              string
+	setupCertResolver            string
+	setupAppsRoot                string
+	setupGateway                 string
+	setupNoUser                  bool
+	setupNoService               bool
+	setupLinger                  bool
+	setupUsername                string
+	setupPasswordStdin           bool
+	setupForce                   bool
+	setupTokenManagerURL         string
+	setupTokenManagerClientID    string
+	setupTokenManagerSecretStdin bool
 )
 
 func init() {
@@ -64,22 +67,28 @@ func init() {
 	f.BoolVar(&setupLinger, "linger", false, "enable user lingering so the service starts at boot")
 	f.StringVar(&setupUsername, "username", "admin", "admin account username")
 	f.BoolVar(&setupPasswordStdin, "password-stdin", false, "read the admin password from stdin")
+	f.StringVar(&setupTokenManagerURL, "token-manager-url", "", "Token-Manager base URL")
+	f.StringVar(&setupTokenManagerClientID, "token-manager-client-id", "", "Token-Manager client ID for space-elevator")
+	f.BoolVar(&setupTokenManagerSecretStdin, "token-manager-client-secret-stdin", false, "read the Token-Manager client secret from stdin")
 	f.BoolVar(&setupForce, "force", false, "overwrite an existing config file")
 }
 
 type setupResult struct {
-	mode            string
-	bindAddr        string
-	publicHost      string
-	traefikDir      string
-	certResolver    string
-	appsRoot        string
-	rootlessGateway string
-	createUser      bool
-	username        string
-	password        string
-	installService  bool
-	linger          bool
+	mode                     string
+	bindAddr                 string
+	publicHost               string
+	traefikDir               string
+	certResolver             string
+	appsRoot                 string
+	rootlessGateway          string
+	createUser               bool
+	username                 string
+	password                 string
+	installService           bool
+	linger                   bool
+	tokenManagerURL          string
+	tokenManagerClientID     string
+	tokenManagerClientSecret string
 }
 
 func runSetup(cmd *cobra.Command, _ []string) error {
@@ -97,15 +106,18 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 
 	res := setupResult{
-		mode:            defaultMode(cfg, setupMode),
-		bindAddr:        cfg.BindAddr,
-		publicHost:      cfg.PublicHost,
-		traefikDir:      cfg.TraefikDir,
-		certResolver:    cfg.CertResolver,
-		appsRoot:        cfg.AppsRoot,
-		rootlessGateway: cfg.RootlessGateway,
-		username:        setupUsername,
-		linger:          setupLinger,
+		mode:                     defaultMode(cfg, setupMode),
+		bindAddr:                 cfg.BindAddr,
+		publicHost:               cfg.PublicHost,
+		traefikDir:               cfg.TraefikDir,
+		certResolver:             cfg.CertResolver,
+		appsRoot:                 cfg.AppsRoot,
+		rootlessGateway:          cfg.RootlessGateway,
+		username:                 setupUsername,
+		linger:                   setupLinger,
+		tokenManagerURL:          cfg.TokenManagerURL,
+		tokenManagerClientID:     cfg.TokenManagerClientID,
+		tokenManagerClientSecret: cfg.TokenManagerClientSecret,
 	}
 
 	if setupYes {
@@ -115,6 +127,13 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 				return err
 			}
 			res.password = pw
+		}
+		if setupTokenManagerSecretStdin {
+			secret, err := readPasswordStdin()
+			if err != nil {
+				return err
+			}
+			res.tokenManagerClientSecret = secret
 		}
 		res.createUser = !setupNoUser && res.password != ""
 		res.installService = !setupNoService
@@ -130,6 +149,9 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 
 	// Persist config.
 	out := res.applyTo(cfg)
+	if out.TokenManagerPartiallyConfigured() {
+		return fmt.Errorf("invalid Token-Manager configuration: URL, client ID, and client secret must be set together")
+	}
 	path := config.ConfigPath()
 	if _, err := os.Stat(path); err == nil && !setupForce {
 		fmt.Fprintf(cmd.ErrOrStderr(), "note: %s already exists; overwriting (use --force to silence this)\n", path)
@@ -170,6 +192,8 @@ func applySetupFlags(cmd *cobra.Command, cfg *config.Config) {
 	set("cert-resolver", &cfg.CertResolver)
 	set("apps-root", &cfg.AppsRoot)
 	set("rootless-gateway", &cfg.RootlessGateway)
+	set("token-manager-url", &cfg.TokenManagerURL)
+	set("token-manager-client-id", &cfg.TokenManagerClientID)
 }
 
 func defaultMode(cfg *config.Config, flag string) string {
@@ -215,6 +239,9 @@ func (r setupResult) applyTo(cfg *config.Config) *config.Config {
 	cfg.CertResolver = r.certResolver
 	cfg.AppsRoot = r.appsRoot
 	cfg.RootlessGateway = r.rootlessGateway
+	cfg.TokenManagerURL = r.tokenManagerURL
+	cfg.TokenManagerClientID = r.tokenManagerClientID
+	cfg.TokenManagerClientSecret = r.tokenManagerClientSecret
 	cfg.DashboardURL = "" // re-derive
 	return cfg
 }
@@ -223,6 +250,9 @@ func runSetupForm(r *setupResult) error {
 	mode := r.mode
 	createUser := false
 	var password, confirm string
+	tokenManagerURL := r.tokenManagerURL
+	tokenManagerClientID := r.tokenManagerClientID
+	tokenManagerClientSecret := r.tokenManagerClientSecret
 
 	groups := []*huh.Group{
 		huh.NewGroup(
@@ -262,6 +292,11 @@ func runSetupForm(r *setupResult) error {
 				Value(&r.traefikDir),
 		).WithHideFunc(func() bool { return mode != "proxy" }),
 		huh.NewGroup(
+			huh.NewInput().Title("Token-Manager URL").Placeholder("http://127.0.0.1:8000").Value(&tokenManagerURL),
+			huh.NewInput().Title("Token-Manager client ID").Placeholder("app_...").Value(&tokenManagerClientID),
+			huh.NewInput().Title("Token-Manager client secret").EchoMode(huh.EchoModePassword).Value(&tokenManagerClientSecret),
+		),
+		huh.NewGroup(
 			huh.NewInput().Title("Dashboard bind address").Value(&r.bindAddr).
 				Validate(validateHostPort),
 			huh.NewInput().Title("Apps root directory").Value(&r.appsRoot),
@@ -297,6 +332,9 @@ func runSetupForm(r *setupResult) error {
 	}
 
 	r.mode = mode
+	r.tokenManagerURL = strings.TrimSpace(tokenManagerURL)
+	r.tokenManagerClientID = strings.TrimSpace(tokenManagerClientID)
+	r.tokenManagerClientSecret = strings.TrimSpace(tokenManagerClientSecret)
 	r.createUser = createUser
 	r.password = password
 	normalizeMode(r)
@@ -449,6 +487,11 @@ func printSetupSummary(cmd *cobra.Command, cfg *config.Config, res setupResult) 
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "  config file: %s\n", config.ConfigPath())
 	fmt.Fprintf(w, "  dashboard:   http://%s\n", cfg.BindAddr)
+	if cfg.TokenManagerConfigured() {
+		fmt.Fprintf(w, "  token auth:  %s\n", cfg.TokenManagerURL)
+	} else {
+		fmt.Fprintln(w, "  token auth:  disabled (configure Token-Manager for REST API access)")
+	}
 	switch res.mode {
 	case "traefik":
 		scheme := "https"

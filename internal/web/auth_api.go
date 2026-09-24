@@ -1,22 +1,19 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/albertoruiz/space-elevator/internal/audit"
+	"github.com/albertoruiz/space-elevator/internal/tokenmanager"
 )
 
-// requireAPIToken authenticates /api/v1 requests via a Personal Access
-// Token in the Authorization header. Unlike browser routes there is no
-// cookie and no CSRF: the token itself is the single credential, so it
-// must be shown once by the generator and stored hashed (like
-// sessions).
-//
-// A missing, unknown, or expired token yields 401 with
-// WWW-Authenticate: Bearer; that also keeps probes from learning
-// whether a token is "close" to valid.
+// requireAPIToken authenticates /api/v1 requests through the external
+// Token-Manager service. Token-Manager is the only source of truth for token
+// creation, expiry, revocation, and last-used tracking. If it cannot provide
+// a trustworthy answer, authentication fails closed with 503; there is no
+// local token fallback.
 func (s *Server) requireAPIToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := bearerToken(r)
@@ -24,18 +21,21 @@ func (s *Server) requireAPIToken(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
-		tok, err := s.Store.GetAPIToken(r.Context(), raw)
-		if err != nil {
-			unauthorized(w)
+		if s.TokenManager == nil {
+			authenticationUnavailable(w)
 			return
 		}
-		// Throttled last-used tracking: at most one write per token per
-		// minute keeps hot loops from churning the DB.
-		now := time.Now()
-		if tok.LastUsedAt == nil || now.Sub(*tok.LastUsedAt) > time.Minute {
-			_ = s.Store.TouchAPIToken(r.Context(), tok.ID, now)
+
+		tok, err := s.TokenManager.Validate(r.Context(), raw)
+		if err != nil {
+			if errors.Is(err, tokenmanager.ErrInvalidToken) {
+				unauthorized(w)
+			} else {
+				authenticationUnavailable(w)
+			}
+			return
 		}
-		// Attribute everything downstream to the token, not a session.
+
 		ctx := audit.WithActor(r.Context(), audit.Actor{
 			Type:  audit.ActorToken,
 			ID:    tok.ID,
@@ -56,4 +56,8 @@ func bearerToken(r *http.Request) string {
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="space-elevator-api"`)
 	jsonError(w, http.StatusUnauthorized, "missing or invalid API token")
+}
+
+func authenticationUnavailable(w http.ResponseWriter) {
+	jsonError(w, http.StatusServiceUnavailable, "API authentication service unavailable")
 }

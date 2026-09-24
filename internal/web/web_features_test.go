@@ -121,9 +121,10 @@ func TestFlashRenderedAndCleared(t *testing.T) {
 	}
 }
 
-// A stopped app offers Start (and the rename modal is present on the
-// detail page). Empty compose keeps the row's own status authoritative.
-func TestAppDetailStoppedShowsStartAndRename(t *testing.T) {
+// A stopped app offers Start, and the app name is an inline rename
+// control (input swapped in for the title, not a modal). Empty compose
+// keeps the row's own status authoritative.
+func TestAppDetailStoppedShowsStartAndInlineRename(t *testing.T) {
 	s := newDetailTestServer(t)
 	mustApp(t, s, &store.App{ID: "s1", Name: "stopped-app", SourceType: "git", Status: "stopped", Env: map[string]string{}})
 
@@ -136,7 +137,10 @@ func TestAppDetailStoppedShowsStartAndRename(t *testing.T) {
 	if !strings.Contains(body, "/apps/stopped-app/start") {
 		t.Error("stopped app should offer a Start action")
 	}
-	if !strings.Contains(body, "rename-dialog") {
-		t.Error("rename dialog missing from detail page")
+	if !strings.Contains(body, `id="rename-form"`) || !strings.Contains(body, `id="rename-open"`) {
+		t.Error("inline rename control missing from detail page")
+	}
+	if strings.Contains(body, "rename-dialog") {
+		t.Error("rename must be inline, not a modal dialog")
 	}
 }

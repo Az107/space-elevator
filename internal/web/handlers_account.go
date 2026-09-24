@@ -28,6 +28,8 @@ func (s *Server) currentUser(r *http.Request) (*store.User, error) {
 
 // handleAccountUsername renames the account after re-checking the
 // current password, so a hijacked tab can't silently relabel the login.
+// Validation failures render inline on the username form and echo back
+// what was typed (nothing is lost on error).
 func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderSettings(w, r, err.Error())
@@ -38,18 +40,18 @@ func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, "no user")
 		return
 	}
+	username := strings.TrimSpace(r.FormValue("username"))
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
 		s.recordAudit(r, audit.ActionUsernameChange, "user", u.ID, u.Username, audit.OutcomeFailure, "current password incorrect")
-		s.renderSettings(w, r, "Username not changed: current password is incorrect.")
+		s.renderAccountForm(w, r, "username", "Username not changed: current password is incorrect.", username)
 		return
 	}
-	username := strings.TrimSpace(r.FormValue("username"))
 	if username == "" {
-		s.renderSettings(w, r, "Username not changed: new username is empty.")
+		s.renderAccountForm(w, r, "username", "Username not changed: new username is empty.", username)
 		return
 	}
 	if len(username) > 64 {
-		s.renderSettings(w, r, "Username not changed: keep it under 64 characters.")
+		s.renderAccountForm(w, r, "username", "Username not changed: keep it under 64 characters.", username)
 		return
 	}
 	if username == u.Username {
@@ -58,7 +60,7 @@ func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.UpdateUsername(r.Context(), u.ID, username); err != nil {
 		if errors.Is(err, store.ErrUsernameTaken) {
-			s.renderSettings(w, r, "Username not changed: that username is already taken.")
+			s.renderAccountForm(w, r, "username", "Username not changed: that username is already taken.", username)
 			return
 		}
 		s.renderSettings(w, r, err.Error())
@@ -83,25 +85,25 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.FormValue("current_password"))) != nil {
 		s.recordAudit(r, audit.ActionPasswordChange, "user", u.ID, u.Username, audit.OutcomeFailure, "current password incorrect")
-		s.renderSettings(w, r, "Password not changed: current password is incorrect.")
+		s.renderAccountForm(w, r, "password", "Password not changed: current password is incorrect.", "")
 		return
 	}
 	newPwd := r.FormValue("new_password")
 	if len(newPwd) < minPasswordLen {
-		s.renderSettings(w, r, "Password not changed: it must be at least 8 characters.")
+		s.renderAccountForm(w, r, "password", "Password not changed: it must be at least 8 characters.", "")
 		return
 	}
 	if newPwd != r.FormValue("confirm") {
-		s.renderSettings(w, r, "Password not changed: the two new passwords don't match.")
+		s.renderAccountForm(w, r, "password", "Password not changed: the two new passwords don't match.", "")
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPwd), bcrypt.DefaultCost)
 	if err != nil {
-		s.renderSettings(w, r, err.Error())
+		s.renderAccountForm(w, r, "password", err.Error(), "")
 		return
 	}
 	if err := s.Store.UpdateUserPassword(r.Context(), u.ID, string(hash)); err != nil {
-		s.renderSettings(w, r, err.Error())
+		s.renderAccountForm(w, r, "password", err.Error(), "")
 		return
 	}
 	_ = s.Store.DeleteOtherSessionsForUser(r.Context(), u.ID, sessionFromCtx(r.Context()).ID)

@@ -73,15 +73,17 @@ func TestRenderAllPages(t *testing.T) {
 
 	rr = httptest.NewRecorder()
 	render("settings", rr, "settings.html", settingsData{
-		PageData:        PageData{Authed: true, Title: "Settings"},
-		SocketPath:      "/run/user/1000/podman/podman.sock",
-		TraefikDir:      "/home/you/Infra/traefik/rootful-dynamic",
-		CertResolver:    "letsencrypt",
-		PublicHost:      "elevator.albruiz.dev",
-		AppPathPrefix:   "/app/",
-		SelfRouteExists: false,
-		SelfRouteURL:    "https://elevator.albruiz.dev/dashboard/",
-		Creds:           []*store.GitCredential{{Host: "github.com", Username: "x-access-token"}},
+		PageData:               PageData{Authed: true, Title: "Settings"},
+		SocketPath:             "/run/user/1000/podman/podman.sock",
+		TraefikDir:             "/home/you/Infra/traefik/rootful-dynamic",
+		CertResolver:           "letsencrypt",
+		PublicHost:             "elevator.albruiz.dev",
+		AppPathPrefix:          "/app/",
+		SelfRouteExists:        false,
+		SelfRouteURL:           "https://elevator.albruiz.dev/dashboard/",
+		TokenManagerURL:        "http://127.0.0.1:8000",
+		TokenManagerConfigured: true,
+		Creds:                  []*store.GitCredential{{Host: "github.com", Username: "x-access-token"}},
 	})
 
 	rr = httptest.NewRecorder()
@@ -106,6 +108,66 @@ func TestRenderAllPages(t *testing.T) {
 	}
 	if out != "" {
 		_ = os.WriteFile(filepath.Join(out, "files.html"), rr.Body.Bytes(), 0o644)
+	}
+}
+
+// The dashboard shares the Token-Manager interaction language: useful
+// labelled controls, staged rows, and a visible current-nav cue. Keep
+// these in the render smoke coverage so a visual refactor cannot quietly
+// remove them from a page template.
+func TestSharedDesignSystem(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r.Render(w, httptest.NewRequest("GET", "/apps", nil), "apps.html", appsListData{
+		PageData:     PageData{Authed: true, Title: "Apps"},
+		Apps:         []*store.App{{ID: "11111111", Name: "atlas-api", SourceType: "git", Status: "running", CreatedAt: time.Now()}},
+		DomainsByApp: map[string][]string{"11111111": {"api.example.com"}},
+	})
+	if w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`style="--row-index: 0"`,
+		`data-nav="apps"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered apps page missing %q", want)
+		}
+	}
+	empty := httptest.NewRecorder()
+	r.Render(empty, httptest.NewRequest("GET", "/apps", nil), "apps.html", appsListData{
+		PageData: PageData{Authed: true, Title: "Apps"},
+	})
+	if !strings.Contains(empty.Body.String(), `class="orbit"`) {
+		t.Error("empty apps page missing the animated orbit artwork")
+	}
+
+	css, err := content.ReadFile("static/css/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		".topnav a::after",
+		"animation: row-in .22s ease-out both",
+		"animation: modal-in .16s ease-out",
+		"prefers-reduced-motion: reduce",
+		"translateY(-1px) scale(1.02)",
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("shared design CSS missing %q", want)
+		}
+	}
+
+	js, err := content.ReadFile("static/js/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(js), "setAttribute('aria-current', 'page')") {
+		t.Error("nav script does not expose the current page to assistive technology")
 	}
 }
 

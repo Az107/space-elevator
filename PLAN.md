@@ -682,23 +682,25 @@ pattern.
   and segfaults under QEMU binfmt — unrelated to the synth pipeline
   (busybox arm64 used for the run tests).
 
-## Phase 4 — PATs + REST API — ✅ done (2026-09-08)
+## Phase 4 — Token-Manager-backed REST API — ✅ done (2026-09-23)
 
 Depends on Phase 2 (env model); after Phase 3 so the API covers custom
 builds for full parity from day one.
 
-- **Migration 0005**: `api_tokens(id, name, token_hash UNIQUE, prefix,
-  expires_at NULL, last_used_at NULL, created_at)`.
-- **Store** (`internal/store/tokens.go`): `MintAPIToken` (mints
-  `se_<43 chars>`; returns raw **once**; persists only the SHA-256
-  hash + a 12-char display prefix), `GetAPIToken` (expired tokens
-  resolve as unknown), `TouchAPIToken`, `ListAPITokens`,
-  `DeleteAPIToken`.
-- **Auth** (`internal/web/auth_api.go`): `requireAPIToken` middleware
-  for `/api/v1/*` — Bearer token, 401 + `WWW-Authenticate` on
-  miss/expiry/garbage; no cookies, no CSRF (the token is the
-  credential); last-used stamp throttled to one write per
-  token/minute. Covered by unit tests incl. expiry.
+- **Token ownership**: the external Token-Manager service owns API token
+  creation, hashing, expiry, revocation, and last-used tracking. The old
+  local `api_tokens` table was removed by migration 0006.
+- **Client** (`internal/tokenmanager/client.go`): validates bearer tokens via
+  `POST /api/v1/validate` using the configured space-elevator app client
+  credentials. Network errors, timeouts, invalid client credentials, and
+  malformed responses fail closed as `503`; invalid tokens return `401`.
+- **Auth** (`internal/web/auth_api.go`): `requireAPIToken` middleware for
+  `/api/v1/*` no longer has a local fallback. Token-Manager metadata is used
+  to attribute API actions to the validating token.
+- **Config**: `token_manager_url`, `token_manager_client_id`, and
+  `token_manager_client_secret` can be set through YAML or
+  `SPACE_ELEVATOR_TOKEN_MANAGER_*`; `doctor` probes service health and
+  `config show` redacts the client secret.
 - **Deployer package** (`internal/deployer`): the clone→build→run→route
   pipeline now lives in ONE implementation with three consumers:
   - `DeployGit` — parse-free pipeline: name validation, ID
@@ -728,21 +730,14 @@ builds for full parity from day one.
     `PUT /apps/{name}/secrets` (flat object, upsert),
     `DELETE /apps/{name}/secrets/{key}`
   - `POST /apps/{name}/domains`, `DELETE /apps/{name}/domains/{domain}`
-- **PAT UI**: Settings → API tokens card: generator (name + expiry
-  never/30/60/90d) re-rendering the page with the raw token in a
-  highlighted once-only reveal; list shows prefix, expiry (last-used
-  stored, shown in future); per-token revoke (POST
-  `/settings/tokens/{id}/delete`).
-- **Docs**: `docs/api.md` — auth, conventions, endpoint table,
-  examples.
-- **Verify**: token store + middleware unit tests (expiry, garbage,
-  missing header, touch); live curl smoke: mint PAT via web form →
-  401s without/garbage token → deploy compose app + custom-build app
-  via API (content served both ways) → PUT env/secrets → redeploy →
-  podman env shows updated values → domain attach/detach + invalid
-  domain 400 → logs → restart → delete (row + containers gone) → web
-  revoke → API 401. Secret values verified absent from every API and
-  page response.
+- **Token UI**: Settings links to Token-Manager; token generation and
+  revocation happen in Token-Manager, where the raw value is shown once.
+- **Docs**: `docs/api.md` — external authentication, conventions, endpoint
+  table, examples.
+- **Verify**: Token-Manager client + middleware unit tests cover valid,
+  invalid, unavailable, misconfigured, and context-cancelled requests; live
+  verification must also confirm a valid `tm_...` token, an invalid token,
+  the old `se_...` token, and service-down behavior.
 
 ## v2 out of scope (deferred)
 

@@ -18,6 +18,13 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestLegacyAPITokenTableRemoved(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.db.Exec(`SELECT 1 FROM api_tokens LIMIT 1`); err == nil {
+		t.Fatal("legacy api_tokens table still exists")
+	}
+}
+
 // mustUser creates a user so session FKs resolve.
 func mustUser(t *testing.T, s *Store, id string) {
 	t.Helper()

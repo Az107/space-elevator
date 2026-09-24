@@ -104,7 +104,8 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 		fileState = "absent (using defaults + env)"
 	}
 
-	fmt.Printf("config file: %s  [%s]\n\n", path, fileState)
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "config file: %s  [%s]\n\n", path, fileState)
 
 	rows := [][2]string{
 		{"bind_addr", cfg.BindAddr},
@@ -124,29 +125,43 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 		{"memory_limit", config.FormatSizeBytes(cfg.DefaultMemoryBytes)},
 		{"pids_limit", fmt.Sprintf("%d", cfg.DefaultPidsLimit)},
 		{"insecure_cookies", fmt.Sprintf("%t", cfg.InsecureCookies)},
+		{"token_manager_url", cfg.TokenManagerURL},
+		{"token_manager_client_id", cfg.TokenManagerClientID},
+		{"token_manager_client_secret", secretState(cfg.TokenManagerClientSecret)},
 	}
 	for _, r := range rows {
-		fmt.Printf("  %-18s %s\n", r[0]+":", r[1])
+		fmt.Fprintf(w, "  %-18s %s\n", r[0]+":", r[1])
 	}
 
 	env := map[string]string{}
 	for _, k := range config.EnvKeys {
 		if v, ok := os.LookupEnv(k); ok {
-			env[k] = v
+			if k == "SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET" {
+				env[k] = secretState(v)
+			} else {
+				env[k] = v
+			}
 		}
 	}
 	if len(env) > 0 {
-		fmt.Println("\nenvironment overrides:")
+		fmt.Fprintln(w, "\nenvironment overrides:")
 		keys := make([]string, 0, len(env))
 		for k := range env {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Printf("  %s=%s\n", k, env[k])
+			fmt.Fprintf(w, "  %s=%s\n", k, env[k])
 		}
 	}
 	return nil
+}
+
+func secretState(value string) string {
+	if value == "" {
+		return "<unset>"
+	}
+	return "<set>"
 }
 
 var configValidateCmd = &cobra.Command{

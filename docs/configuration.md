@@ -70,6 +70,18 @@ what is actually in effect with `space-elevator config show`, and check it with
 | `pids_limit` | `SPACE_ELEVATOR_PIDS_LIMIT` | `256` | Per-container PID limit; `0` = unlimited. |
 | `insecure_cookies` | `SPACE_ELEVATOR_INSECURE_COOKIES` | `false` | Disables the session cookie `Secure` flag. Plain-HTTP local testing only. |
 
+### REST API authentication
+
+REST API bearer tokens are owned by the external Token-Manager service, not by space-elevator. Create an app named `space-elevator` in Token-Manager, then configure its one-time client credentials:
+
+| Key | Env | Default | Notes |
+|---|---|---|---|
+| `token_manager_url` | `SPACE_ELEVATOR_TOKEN_MANAGER_URL` | *(empty)* | Token-Manager base URL, for example `http://127.0.0.1:8000`. |
+| `token_manager_client_id` | `SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID` | *(empty)* | Client ID issued for the space-elevator app. |
+| `token_manager_client_secret` | `SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET` | *(empty)* | Client secret issued for the space-elevator app. Keep the config file private; `config show` redacts this value. |
+
+The three values must be set together. If all are empty, the dashboard remains usable but `/api/v1` returns `503` rather than falling back to the old local token table. Configure the values with `space-elevator setup` or the environment/service environment file. Existing `se_...` tokens are intentionally not accepted; create new `tm_...` tokens in Token-Manager.
+
 ## Example: public HTTPS with Traefik
 
 ```yaml
@@ -137,6 +149,9 @@ overrides there, e.g.:
 SPACE_ELEVATOR_PUBLIC_HOST=elevator.example.com
 SPACE_ELEVATOR_TRAEFIK_DIR=/etc/traefik/dynamic
 SPACE_ELEVATOR_CERT_RESOLVER=letsencrypt
+SPACE_ELEVATOR_TOKEN_MANAGER_URL=http://127.0.0.1:8000
+SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID=app_...
+SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET=cs_...
 ```
 
 ## Verifying and migrating

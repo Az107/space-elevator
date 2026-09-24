@@ -1,0 +1,3 @@
+# Local-only tooling: deploy.sh is this host's build/restart wrapper and
+# is not meant to be versioned (see AGENTS.md for the raw commands).
+/deploy.sh

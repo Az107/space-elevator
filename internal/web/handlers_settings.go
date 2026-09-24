@@ -1,13 +1,8 @@
 package web
 
 import (
-	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/albertoruiz/space-elevator/internal/audit"
@@ -17,18 +12,20 @@ import (
 
 type settingsData struct {
 	PageData
-	Username        string
-	Creds           []*store.GitCredential
-	Tokens          []*store.APIToken
-	NewToken        string // raw value, rendered exactly once after creation
-	NewTokenName    string
-	SocketPath      string
-	TraefikDir      string
-	CertResolver    string
-	PublicHost      string
-	AppPathPrefix   string
-	SelfRouteExists bool
-	SelfRouteURL    string
+	Username               string
+	UsernameValue          string // what the username field shows (echoes a failed attempt)
+	UsernameErr            string // inline error scoped to the username form
+	PasswordErr            string // inline error scoped to the password form
+	Creds                  []*store.GitCredential
+	TokenManagerURL        string
+	TokenManagerConfigured bool
+	SocketPath             string
+	TraefikDir             string
+	CertResolver           string
+	PublicHost             string
+	AppPathPrefix          string
+	SelfRouteExists        bool
+	SelfRouteURL           string
 }
 
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, errMsg string) {
@@ -41,18 +38,8 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, errMsg s
 	s.Renderer.Render(w, r, "settings.html", d)
 }
 
-// renderSettingsNewToken renders the settings page immediately after a
-// token was minted, so the raw value is displayed exactly once.
-func (s *Server) renderSettingsNewToken(w http.ResponseWriter, r *http.Request, raw, name string) {
-	d := s.settingsPageData(r)
-	d.NewToken = raw
-	d.NewTokenName = name
-	s.Renderer.Render(w, r, "settings.html", d)
-}
-
 func (s *Server) settingsPageData(r *http.Request) settingsData {
 	creds, _ := s.Store.ListCredentials(r.Context())
-	tokens, _ := s.Store.ListAPITokens(r.Context())
 	exists, _ := s.TraefikW.SelfExists()
 	c := traefik.SelfRouteConfig{
 		Host:         s.Cfg.PublicHost,
@@ -67,17 +54,19 @@ func (s *Server) settingsPageData(r *http.Request) settingsData {
 		}
 	}
 	return settingsData{
-		PageData:        pageCtx(r, "Settings"),
-		Username:        username,
-		Creds:           creds,
-		Tokens:          tokens,
-		SocketPath:      s.Cfg.SocketPath,
-		TraefikDir:      s.Cfg.TraefikDir,
-		CertResolver:    s.Cfg.CertResolver,
-		PublicHost:      s.Cfg.PublicHost,
-		AppPathPrefix:   s.Cfg.AppPathPrefix,
-		SelfRouteExists: exists,
-		SelfRouteURL:    c.SelfURL(),
+		PageData:               pageCtx(r, "Settings"),
+		Username:               username,
+		UsernameValue:          username,
+		Creds:                  creds,
+		TokenManagerURL:        s.Cfg.TokenManagerURL,
+		TokenManagerConfigured: s.TokenManager != nil,
+		SocketPath:             s.Cfg.SocketPath,
+		TraefikDir:             s.Cfg.TraefikDir,
+		CertResolver:           s.Cfg.CertResolver,
+		PublicHost:             s.Cfg.PublicHost,
+		AppPathPrefix:          s.Cfg.AppPathPrefix,
+		SelfRouteExists:        exists,
+		SelfRouteURL:           c.SelfURL(),
 	}
 }
 
@@ -85,58 +74,22 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w, r, "")
 }
 
-// handleSettingsTokens mints a PAT and re-renders the settings page
-// with the raw value shown once. Redirecting with the token in the URL
-// would leak it into history and logs, so the page is the delivery.
-func (s *Server) handleSettingsTokens(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.renderSettings(w, r, err.Error())
-		return
+// renderAccountForm re-renders Settings with an error scoped to one of
+// the two Account forms. Keeping the message on the form (instead of the
+// page-level flash) puts it directly above the fields that produced it,
+// so it can't read as belonging to the other form — and no redirect means
+// what was typed survives. submitted is echoed back into the username
+// field; password fields are never echoed.
+func (s *Server) renderAccountForm(w http.ResponseWriter, r *http.Request, form, msg, submitted string) {
+	d := s.settingsPageData(r)
+	switch form {
+	case "username":
+		d.UsernameErr = msg
+		d.UsernameValue = submitted
+	case "password":
+		d.PasswordErr = msg
 	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		s.renderSettings(w, r, "Token name required.")
-		return
-	}
-	if len(name) > 64 {
-		s.renderSettings(w, r, "Token name too long (max 64 characters).")
-		return
-	}
-	expires, err := tokenExpiryFromForm(r.FormValue("expiry"))
-	if err != nil {
-		s.renderSettings(w, r, err.Error())
-		return
-	}
-	tok, raw, err := s.Store.MintAPIToken(r.Context(), name, expires)
-	if err != nil {
-		s.renderSettings(w, r, "Could not create token: "+err.Error())
-		return
-	}
-	s.recordAudit(r, audit.ActionTokenCreate, "token", tok.ID, tok.Name, audit.OutcomeSuccess, "prefix "+tok.Prefix)
-	s.renderSettingsNewToken(w, r, raw, name)
-}
-
-func (s *Server) handleSettingsTokenDelete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := s.Store.DeleteAPIToken(r.Context(), id); err != nil {
-		s.redirectErr(w, r, "/settings", err.Error())
-		return
-	}
-	s.recordAudit(r, audit.ActionTokenRevoke, "token", id, "", audit.OutcomeSuccess, "")
-	s.redirectOK(w, r, "/settings", "API token revoked.")
-}
-
-// tokenExpiryFromForm maps the UI's day choices to an optional expiry.
-func tokenExpiryFromForm(v string) (*time.Time, error) {
-	days, err := strconv.Atoi(v)
-	if err != nil || days < 0 {
-		return nil, fmt.Errorf("invalid expiry choice %q", v)
-	}
-	if days == 0 {
-		return nil, nil
-	}
-	t := time.Now().Add(time.Duration(days) * 24 * time.Hour)
-	return &t, nil
+	s.Renderer.Render(w, r, "settings.html", d)
 }
 
 func (s *Server) handleSettingsCreds(w http.ResponseWriter, r *http.Request) {
