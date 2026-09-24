@@ -84,9 +84,10 @@ type AppRouteConfig struct {
 //   - A Host-only router pair (HTTP redirect → HTTPS secure) for every
 //     custom domain attached to the service. If no domains are attached,
 //     these are skipped.
-//   - A Host+PathPrefix pair under PublicHost/AppPathPrefix/<app>-<service>/
-//     (with a stripPrefix middleware) so the app is reachable under the
-//     dashboard subdomain without a dedicated DNS record.
+//   - A Host+PathPrefix pair under PublicHost/AppPathPrefix/<app>/
+//     (or /<app>-<service>/ for additional services) with a stripPrefix
+//     middleware so the app is reachable under the dashboard host without a
+//     dedicated DNS record.
 //
 // The HTTP routers redirect to HTTPS via a per-app <svc>-https middleware,
 // matching the format used by the host's existing rootful routes.
@@ -99,6 +100,7 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 	hasSubdomain := false
 	hasPath := false
 	prefix := normalizePrefix(cfg.AppPathPrefix)
+	pathKeys := pathKeysFor(cfg.Routes)
 
 	for _, r := range cfg.Routes {
 		if r.IP == "" || r.Port == 0 {
@@ -147,10 +149,11 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 
 		if cfg.PublicHost != "" && prefix != "" {
 			hasPath = true
-			appPrefix := prefix + svcKey + "/"
+			pathKey := pathKeys[routeID(r)]
+			appPrefix := prefix + pathKey + "/"
 			rule := fmt.Sprintf("Host(`%s`) && PathPrefix(`%s`)", cfg.PublicHost, appPrefix)
 			dc.HTTP.Middlewares[stripMw] = Middleware{
-				StripPrefix: &StripPrefix{Prefixes: []string{prefix + svcKey}},
+				StripPrefix: &StripPrefix{Prefixes: []string{prefix + pathKey}},
 			}
 			if secure {
 				dc.HTTP.Routers[svcKey+"-path-secure"] = Router{
@@ -186,6 +189,41 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 	return out, nil
+}
+
+func routeID(route ServiceRoute) string {
+	return route.AppName + "\x00" + route.Name
+}
+
+// pathKeysFor gives a service named "web" the user-facing app path, while
+// keeping other compose services addressable by app-service. This keeps the
+// common static/web URL /app/my-app/ without changing service-specific paths
+// for stacks that do not expose a web service.
+func pathKeysFor(routes []ServiceRoute) map[string]string {
+	byApp := make(map[string][]ServiceRoute)
+	for _, route := range routes {
+		byApp[route.AppName] = append(byApp[route.AppName], route)
+	}
+
+	keys := make(map[string]string, len(routes))
+	for app, appRoutes := range byApp {
+		sort.Slice(appRoutes, func(i, j int) bool { return appRoutes[i].Name < appRoutes[j].Name })
+		primary := ""
+		for _, route := range appRoutes {
+			if route.Name == "web" {
+				primary = route.Name
+				break
+			}
+		}
+		for _, route := range appRoutes {
+			key := serviceKey(app, route.Name)
+			if primary != "" && route.Name == primary {
+				key = sanitize(app)
+			}
+			keys[routeID(route)] = key
+		}
+	}
+	return keys
 }
 
 func serviceKey(app, svc string) string {

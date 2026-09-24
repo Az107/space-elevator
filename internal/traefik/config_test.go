@@ -167,8 +167,11 @@ func TestRender_AppRoutePathOnlyWhenNoDomain(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	s := string(got)
-	if !strings.Contains(s, "Host(`elevator.albruiz.dev`) && PathPrefix(`/app/demo-web/`)") {
-		t.Errorf("expected path-prefix route under public host, got:\n%s", s)
+	if !strings.Contains(s, "Host(`elevator.albruiz.dev`) && PathPrefix(`/app/demo/`)") {
+		t.Errorf("expected primary app path-prefix route under public host, got:\n%s", s)
+	}
+	if !strings.Contains(s, "prefixes:\n                    - /app/demo") {
+		t.Errorf("expected strip prefix to remove the primary app path, got:\n%s", s)
 	}
 	if strings.Contains(s, "demo-web-secure:") {
 		t.Errorf("did not expect bare subdomain router when no domain attached; got:\n%s", s)

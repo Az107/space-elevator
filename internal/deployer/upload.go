@@ -107,7 +107,7 @@ func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.
 		if detected == builder.DropKindStatic {
 			baseHref := "/"
 			if d.Opts.AppPathPrefix != "" {
-				baseHref = strings.TrimRight(d.Opts.AppPathPrefix, "/") + "/" + name + "-web/"
+				baseHref = strings.TrimRight(d.Opts.AppPathPrefix, "/") + "/" + name + "/"
 			}
 			if _, err := builder.WriteStaticFiles(destDir, baseHref); err != nil {
 				cleanup()

@@ -404,7 +404,7 @@ func (d *Deployer) Redeploy(ctx context.Context, a *store.App) error {
 		domains, _ := d.Store.GetAppDomains(ctx, a.ID)
 		baseHref := "/"
 		if len(domains) == 0 && d.Opts.AppPathPrefix != "" {
-			baseHref = strings.TrimRight(d.Opts.AppPathPrefix, "/") + "/" + a.Slug + "-web/"
+			baseHref = strings.TrimRight(d.Opts.AppPathPrefix, "/") + "/" + a.Slug + "/"
 		}
 		if _, err := builder.WriteStaticFiles(sourceDir, baseHref); err != nil {
 			return fmt.Errorf("regenerate static files: %w", err)
