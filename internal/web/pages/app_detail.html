@@ -20,37 +20,37 @@
       </form>
       <span class="lamp lamp-{{ .Status }}"><i></i>{{ .Status }}</span>
     </div>
-    <div class="row-actions actions">
+    <div class="row-actions actions app-row-actions">
       <div class="group">
         {{ if or (eq .Status "running") (eq .Status "partial") }}
         <form action="/apps/{{ .App.Name }}/stop" method="post"
               data-confirm="Stop {{ .App.Name }}?" data-confirm-title="Stop app" data-busy>
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-          <button type="submit" class="ghost">{{ template "i-stop" }}<span class="btn-label">Stop</span></button>
+          <button type="submit" class="btn subtle visible sm">{{ template "i-stop" }}<span class="btn-label">Stop</span></button>
         </form>
         {{ else if and (eq .Status "stopped") (or (eq .App.Status "running") (eq .App.Status "stopped")) }}
         <form action="/apps/{{ .App.Name }}/start" method="post" data-busy>
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-          <button type="submit" class="ghost">{{ template "i-play" }}<span class="btn-label">Start</span></button>
+          <button type="submit" class="btn subtle visible sm">{{ template "i-play" }}<span class="btn-label">Start</span></button>
         </form>
         {{ end }}
         <form action="/apps/{{ .App.Name }}/restart" method="post" data-busy>
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-          <button type="submit" class="ghost">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
+          <button type="submit" class="btn subtle visible sm">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
         </form>
       </div>
       <form action="/apps/{{ .App.Name }}/redeploy" method="post"
             data-confirm="Redeploy {{ .App.Name }} from its stored source?"
             data-confirm-title="Redeploy app" data-busy>
         <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="ghost">{{ template "i-redeploy" }}<span class="btn-label">Redeploy</span></button>
+        <button type="submit" class="btn subtle visible sm">{{ template "i-redeploy" }}<span class="btn-label">Redeploy</span></button>
       </form>
       <span class="sep" aria-hidden="true"></span>
       <form action="/apps/{{ .App.Name }}/remove" method="post"
             data-confirm="Remove {{ .App.Name }}? This cannot be undone."
             data-confirm-title="Remove app" data-confirm-variant="danger" data-busy>
         <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-        <button type="submit" class="danger">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
+        <button type="submit" class="btn subtle visible danger sm">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
       </form>
     </div>
   </header>

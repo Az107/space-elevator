@@ -675,16 +675,17 @@ table.apps .row-actions {
   text-align: right;
 }
 table.apps .row-actions .actions { justify-content: flex-end; gap: 4px; }
-table.apps .app-row-actions .btn.sm {
+.app-row-actions { gap: 4px; }
+.app-row-actions .btn.sm {
   gap: 5px;
   padding: 5px 8px;
   font-size: 12px;
 }
-table.apps .app-row-actions .ico { width: 13px; height: 13px; }
-table.apps .app-row-actions .sep { margin: 0 1px; }
+.app-row-actions .ico { width: 13px; height: 13px; }
+.app-row-actions .sep { margin: 0 1px; }
 @media (min-width: 721px) {
-  table.apps .app-row-actions .ico { display: none; }
-  table.apps .app-row-actions .btn.sm { padding: 5px 10px; }
+  .app-row-actions .ico { display: none; }
+  .app-row-actions .btn.sm { padding: 5px 10px; }
 }
 
 /* ---------- panels & grids ---------- */
