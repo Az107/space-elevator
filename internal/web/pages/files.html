@@ -23,7 +23,7 @@
         {{ if .Children }}{{ template "files_tree" dict "App" $app "Node" . }}{{ end }}
       </details>
     {{ else }}
-      <a class="file" href="/apps/{{ $app.Name }}/file?path={{ .Path }}" target="_blank">{{ .Name }}</a>
+      <a class="file" href="/apps/{{ $app.Name }}/file?path={{ .Path }}" target="_blank" rel="noopener">{{ .Name }}</a>
       <span class="size">{{ .Size }} B</span>
     {{ end }}
   </li>

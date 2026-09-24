@@ -66,10 +66,19 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 		}
 		token := r.Header.Get("X-CSRF-Token")
 		if token == "" {
-			// Only parse urlencoded bodies here; multipart uploads must
-			// send the header so we don't buffer the whole file early.
-			if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+			contentType := r.Header.Get("Content-Type")
+			switch {
+			case strings.HasPrefix(contentType, "application/x-www-form-urlencoded"):
 				token = r.PostFormValue("csrf")
+			case strings.HasPrefix(contentType, "multipart/form-data"):
+				// The browser-rendered deploy form is multipart even when
+				// deploying from git, so its hidden csrf field is not an
+				// urlencoded body. Parse it here before the handler reads
+				// the archive; the handler's later ParseMultipartForm call
+				// reuses the parsed form and uploaded file.
+				if err := r.ParseMultipartForm(32 << 20); err == nil {
+					token = r.FormValue("csrf")
+				}
 			}
 		}
 		if !s.CSRF.Verify(sess.ID, token) {

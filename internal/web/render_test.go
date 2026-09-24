@@ -85,6 +85,9 @@ func TestRenderAllPages(t *testing.T) {
 		TokenManagerConfigured: true,
 		Creds:                  []*store.GitCredential{{Host: "github.com", Username: "x-access-token"}},
 	})
+	if body := rr.Body.String(); !strings.Contains(body, "https://elevator.albruiz.dev/app/") {
+		t.Errorf("settings page did not render a valid public app URL")
+	}
 
 	rr = httptest.NewRecorder()
 	render("login", rr, "login.html", authData{PageData: PageData{Title: "Sign in"}})

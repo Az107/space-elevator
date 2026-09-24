@@ -1,7 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,7 +81,33 @@ func TestCSRFProtect(t *testing.T) {
 		t.Errorf("valid form token: got %d want 200", rr.Code)
 	}
 
-	// POST with header token → 200 (multipart path)
+	// POST with a valid hidden token in a browser-style multipart form → 200.
+	// The deploy form uses multipart/form-data even for git deploys, so this
+	// must not be limited to the header-token path used by fetch uploads.
+	var multipartBody bytes.Buffer
+	mp := multipart.NewWriter(&multipartBody)
+	if err := mp.WriteField("csrf", c.Token("sess-123")); err != nil {
+		t.Fatal(err)
+	}
+	file, err := mp.CreateFormFile("tarball", "site.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("archive")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	multipartReq := httptest.NewRequest("POST", "/apps/new", &multipartBody)
+	multipartReq.Header.Set("Content-Type", mp.FormDataContentType())
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, withSession(multipartReq))
+	if rr.Code != 200 {
+		t.Errorf("valid multipart form token: got %d want 200", rr.Code)
+	}
+
+	// POST with header token → 200 (fetch upload path)
 	rr = httptest.NewRecorder()
 	h.ServeHTTP(rr, formReq("", map[string]string{"X-CSRF-Token": c.Token("sess-123")}))
 	if rr.Code != 200 {

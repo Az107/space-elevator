@@ -143,7 +143,24 @@
     </fieldset>
 
     <div>
-      <button type="submit" id="deploy-submit">{{ template "i-upload" }}<span class="btn-label">Deploy</span></button>
+      <button type="submit" id="deploy-submit">{{ template "i-upload" }}<span class="btn-label">Review deploy</span></button>
     </div>
   </form>
+
+  <dialog id="deploy-review-dialog" class="modal" aria-labelledby="deploy-review-title">
+    <div class="review-dialog">
+      <h2 id="deploy-review-title">Review deployment</h2>
+      <p class="muted">Check the deployment details before starting the build.</p>
+      <div class="review-grid" aria-live="polite">
+        <div><span class="review-label">App type</span><strong id="review-kind">Web app</strong></div>
+        <div><span class="review-label">Source</span><strong id="review-source">Git repository</strong></div>
+        <div><span class="review-label">Name</span><strong id="review-name">Generated from source</strong></div>
+      </div>
+      <p class="hint">After deployment, the app will be available under <code>/app/&lt;name&gt;/</code> on the dashboard host.</p>
+      <div class="modal-actions">
+        <button type="button" class="ghost" id="deploy-review-cancel">Back to form</button>
+        <button type="button" class="btn" id="deploy-review-confirm">{{ template "i-upload" }}<span class="btn-label">Deploy</span></button>
+      </div>
+    </div>
+  </dialog>
 </section>

@@ -90,7 +90,8 @@ document.addEventListener('submit', e => {
   const f = document.querySelector('form[action="/apps/new"]');
   if (!f) return;
   const label = () => f.querySelector('button[type="submit"] .btn-label');
-  f.addEventListener('submit', () => {
+  f.addEventListener('submit', e => {
+    if (e.defaultPrevented) return;
     const btn = f.querySelector('button[type="submit"]');
     if (btn) {
       btn.disabled = true;
@@ -106,7 +107,7 @@ document.addEventListener('submit', e => {
       btn.disabled = false;
       btn.removeAttribute('aria-busy');
       const l = label();
-      if (l) l.textContent = 'Deploy';
+      if (l) l.textContent = 'Review deploy';
     }
   });
 })();
@@ -295,6 +296,19 @@ document.addEventListener('submit', e => {
       el.disabled = !enabled;
     });
   }
+  function updateReview() {
+    const kindLabels = { web: 'Web app', function: 'Function', custom: 'Container' };
+    const sourceLabels = { git: 'Git repository', upload: 'Upload archive' };
+    const kind = checked('kind');
+    const source = checked('source');
+    const name = form.querySelector('input[name="name"]');
+    const kindEl = form.querySelector('#review-kind');
+    const sourceEl = form.querySelector('#review-source');
+    const nameEl = form.querySelector('#review-name');
+    if (kindEl) kindEl.textContent = kindLabels[kind] || 'Web app';
+    if (sourceEl) sourceEl.textContent = sourceLabels[source] || 'Git repository';
+    if (nameEl) nameEl.textContent = name && name.value.trim() ? name.value.trim() : 'Generated from source';
+  }
   function sync() {
     const kind = checked('kind');
     const source = checked('source');
@@ -308,9 +322,34 @@ document.addEventListener('submit', e => {
       }
       setEnabled(el, ok);
     });
+    updateReview();
   }
   form.querySelectorAll('input[name="kind"], input[name="source"]').forEach(el => el.addEventListener('change', sync));
+  form.addEventListener('input', updateReview);
   sync();
+
+  const reviewDialog = document.getElementById('deploy-review-dialog');
+  const reviewCancel = document.getElementById('deploy-review-cancel');
+  const reviewConfirm = document.getElementById('deploy-review-confirm');
+  if (reviewDialog && reviewCancel && reviewConfirm) {
+    form.addEventListener('submit', e => {
+      if (form.dataset.reviewConfirmed === '1') {
+        delete form.dataset.reviewConfirmed;
+        return;
+      }
+      if (typeof reviewDialog.showModal !== 'function') return;
+      e.preventDefault();
+      updateReview();
+      reviewDialog.showModal();
+    }, true);
+    reviewCancel.addEventListener('click', () => reviewDialog.close());
+    reviewConfirm.addEventListener('click', () => {
+      form.dataset.reviewConfirmed = '1';
+      reviewDialog.close();
+      if (form.requestSubmit) form.requestSubmit();
+      else form.submit();
+    });
+  }
 
   const dz = document.getElementById('wiz-dropzone');
   const input = document.getElementById('wiz-drop-input');
@@ -366,6 +405,12 @@ document.addEventListener('submit', e => {
   function setControls(enabled) {
     if (sel) sel.disabled = !enabled;
     if (followBtn) followBtn.disabled = !enabled;
+  }
+  function setFollowState(active, label) {
+    if (!followBtn) return;
+    followBtn.textContent = label;
+    followBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    followBtn.classList.toggle('active', active);
   }
 
   function loadContainerLogs() {
@@ -429,15 +474,22 @@ document.addEventListener('submit', e => {
   const deploying = panel && panel.dataset.deploying === 'true';
 
   // Follow toggle: SSE streaming of container logs.
+  function stopFollowing(label = 'Follow') {
+    if (es) { es.close(); es = null; }
+    setFollowState(false, label);
+  }
+  if (sel) {
+    sel.addEventListener('change', () => {
+      if (es) stopFollowing('Follow');
+    });
+  }
   followBtn.addEventListener('click', () => {
     if (es) {
-      es.close(); es = null;
-      followBtn.textContent = 'Follow';
-      followBtn.classList.remove('active');
+      stopFollowing();
       return;
     }
     pre.textContent = '';
-    followBtn.classList.add('active');
+    setFollowState(true, 'Stop');
     const svc = sel.value;
     const url = '/apps/' + encodeURIComponent(app) + '/logs?stream=1' + (svc ? '&service=' + svc : '');
     es = new EventSource(url);
@@ -446,11 +498,8 @@ document.addEventListener('submit', e => {
       autoscroll();
     };
     es.onerror = () => {
-      es.close(); es = null;
-      followBtn.textContent = 'Reconnect';
-      followBtn.classList.remove('active');
+      stopFollowing('Reconnect');
     };
-    followBtn.textContent = 'Stop';
   });
 
   if (deploying) {
