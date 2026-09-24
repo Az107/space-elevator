@@ -124,20 +124,31 @@
     </section>
 
     <aside class="detail-side">
-      <section class="panel">
-        <h2>Environment</h2>
-        <p class="panel-desc">Plain variables, editable. Injected at runtime and during image builds on the next redeploy. Secrets are runtime-only.</p>
-        <form action="/apps/{{ .App.Name }}/env" method="post" class="form">
+      <section class="panel environment-panel">
+        <div class="panel-heading">
+          <h2>Environment</h2>
+          <span class="panel-note">plain values</span>
+        </div>
+        <p class="panel-desc">Injected at runtime and during image builds. Changes apply on the next redeploy.</p>
+        <form action="/apps/{{ .App.Name }}/env" method="post" class="form environment-form">
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-          <textarea name="env" rows="4" spellcheck="false" aria-label="Environment variables">{{ .EnvText }}</textarea>
-          <div>
-            <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Save env</span></button>
+          <label class="field-label" for="app-env">KEY=VALUE per line</label>
+          <textarea id="app-env" name="env" rows="5" spellcheck="false" placeholder="NODE_ENV=production&#10;PORT=3000">{{ .EnvText }}</textarea>
+          <div class="panel-actions">
+            <button type="submit" class="ghost">{{ template "i-save" }}<span class="btn-label">Save environment</span></button>
+            <span class="muted panel-note">Visible values</span>
           </div>
         </form>
-        <h2>Secrets</h2>
-        <p class="panel-desc">Injected like env vars but never displayed again. Secrets override env vars.</p>
+      </section>
+
+      <section class="panel secrets-panel">
+        <div class="panel-heading">
+          <h2>Secrets</h2>
+          <span class="panel-note">never shown again</span>
+        </div>
+        <p class="panel-desc">Injected like environment variables at runtime, but never displayed again.</p>
         {{ if .SecretKeys }}
-        <ul class="domains">
+        <ul class="secret-list">
           {{ range .SecretKeys }}
           <li>
             <span class="mono">{{ . }}</span>
@@ -150,12 +161,16 @@
           </li>
           {{ end }}
         </ul>
-        {{ else }}<p class="muted quiet">No secrets set.</p>{{ end }}
-        <form action="/apps/{{ .App.Name }}/secrets" method="post" class="inline-form">
+        {{ else }}<p class="muted empty-inline">No secrets set.</p>{{ end }}
+        <form action="/apps/{{ .App.Name }}/secrets" method="post" class="secret-form">
           <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
-          <input type="text" name="key" placeholder="KEY" pattern="[A-Za-z_][A-Za-z0-9_]*" required>
-          <input type="password" name="value" placeholder="value" autocomplete="off" required>
-          <button type="submit">{{ template "i-key" }}<span class="btn-label">Set</span></button>
+          <label class="field-label" for="secret-key">Key
+            <input id="secret-key" type="text" name="key" placeholder="API_TOKEN" pattern="[A-Za-z_][A-Za-z0-9_]*" required>
+          </label>
+          <label class="field-label" for="secret-value">Value
+            <input id="secret-value" type="password" name="value" placeholder="Enter value" autocomplete="off" required>
+          </label>
+          <button type="submit">{{ template "i-key" }}<span class="btn-label">Set secret</span></button>
         </form>
       </section>
 
@@ -185,12 +200,14 @@
           <button type="submit">{{ template "i-globe" }}<span class="btn-label">Attach</span></button>
         </form>
       </section>
-
-      <section class="panel files-panel">
-        <h2>Files</h2>
-        <p class="panel-desc">Source from the {{ .App.SourceType }} deploy. Click a file to view it (text, up to 256 KB).</p>
-        <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
-      </section>
     </aside>
   </div>
+
+  <section class="panel files-panel">
+    <div class="panel-heading">
+      <h2>Files</h2>
+    </div>
+    <p class="panel-desc">Source from the {{ .App.SourceType }} deploy. Text files open in a new tab.</p>
+    <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
+  </section>
 </section>
