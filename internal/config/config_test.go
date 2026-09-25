@@ -143,6 +143,30 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRefusesSymlinkAndValidatesRouteParts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	outside := filepath.Join(dir, "outside")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := (BuiltinDefaults()).Save(path); err == nil {
+		t.Fatal("Save followed a config symlink")
+	}
+	got, _ := os.ReadFile(outside)
+	if string(got) != "keep" {
+		t.Fatalf("symlink target changed: %q", got)
+	}
+	cfg := BuiltinDefaults()
+	cfg.PublicHost = "https://bad.example/"
+	if len(cfg.Errors()) == 0 {
+		t.Fatal("invalid public host was accepted")
+	}
+}
+
 func TestTokenManagerConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

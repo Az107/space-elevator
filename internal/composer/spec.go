@@ -57,6 +57,14 @@ type AppMeta struct {
 	Name  string
 	Env   map[string]string
 	Label string
+	// Storage maps logical compose volume sources to stable physical
+	// references. A volume is a Podman volume name; a bind is an absolute
+	// host path. When an entry is absent the legacy source is used.
+	Storage map[string]StorageBinding
+	// ImageTags overrides the image reference used for a service. Release
+	// deploys use immutable, release-specific tags so building a candidate
+	// never overwrites the image used by the currently running release.
+	ImageTags map[string]string
 	// BuildEnv is the app's plain env, exposed to image builds: as
 	// --build-arg values and as a managed .env.local in the build
 	// context (so Vite/Next/CRA-style bundlers inline them at build

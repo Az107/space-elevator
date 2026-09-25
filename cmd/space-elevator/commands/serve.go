@@ -57,6 +57,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	for _, i := range cfg.Validate() {
 		fmt.Fprintf(os.Stderr, "config %s: %s\n", i.Level, i.Message)
+		if i.Level == "error" {
+			return fmt.Errorf("invalid configuration: %s", i.Message)
+		}
 	}
 
 	srv, err := web.NewServer(cfg)
@@ -85,13 +88,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	h := srv.Routes()
 	fmt.Printf("space-elevator listening on http://%s\n", addr)
 
+	runCtx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
 	// Heal route/runtime drift left by a crash, host event, or proxy
 	// cutover: stale routes (Traefik 502) and missing routes (404). Runs
 	// in the background so the dashboard is reachable immediately.
-	go srv.ReconcileRoutes(cmd.Context())
+	go srv.ReconcileRoutes(runCtx)
 
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- http.ListenAndServe(addr, h) }()
+	go func() { srvErr <- httpServer.ListenAndServe() }()
 
 	// Background GC: every hour, sweep orphan drop dirs / tarballs /
 	// unused images plus expired sessions so a crashed upload doesn't
@@ -120,14 +133,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	shutdown := func() error {
+		cancel()
+		close(gcStop)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer shutdownCancel()
+		httpErr := httpServer.Shutdown(shutdownCtx)
+		srv.Shutdown()
+		return httpErr
+	}
+
 	select {
 	case err := <-srvErr:
-		close(gcStop)
-		return err
+		_ = shutdown()
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
 	case <-stop:
 		fmt.Println("\nshutting down")
-		close(gcStop)
-		return nil
+		return shutdown()
 	}
 }
 

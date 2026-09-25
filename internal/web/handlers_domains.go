@@ -55,17 +55,25 @@ func (s *Server) attachDomain(ctx context.Context, a *store.App, domain string) 
 			return nil // already attached; idempotent
 		}
 	}
-	if err := s.Store.SetAppDomains(ctx, a.ID, append(current, domain)); err != nil {
+	updated := append(current, domain)
+	if err := s.Store.SetAppDomains(ctx, a.ID, updated); err != nil {
 		return err
 	}
-	s.regenerateTraefik(ctx, a)
+	if err := s.regenerateTraefik(ctx, a); err != nil {
+		_ = s.Store.SetAppDomains(ctx, a.ID, current)
+		return fmt.Errorf("publish route: %w", err)
+	}
 	return nil
 }
 
 // detachDomain removes a domain (if present) and regenerates the
 // app's Traefik route. Idempotent.
 func (s *Server) detachDomain(ctx context.Context, a *store.App, domain string) error {
-	current, _ := s.Store.GetAppDomains(ctx, a.ID)
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	current, err := s.Store.GetAppDomains(ctx, a.ID)
+	if err != nil {
+		return err
+	}
 	updated := make([]string, 0, len(current))
 	changed := false
 	for _, d := range current {
@@ -81,7 +89,10 @@ func (s *Server) detachDomain(ctx context.Context, a *store.App, domain string) 
 	if err := s.Store.SetAppDomains(ctx, a.ID, updated); err != nil {
 		return err
 	}
-	s.regenerateTraefik(ctx, a)
+	if err := s.regenerateTraefik(ctx, a); err != nil {
+		_ = s.Store.SetAppDomains(ctx, a.ID, current)
+		return fmt.Errorf("publish route: %w", err)
+	}
 	return nil
 }
 
@@ -90,6 +101,9 @@ func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {
 	a, err := s.Store.GetAppByName(r.Context(), name)
 	if err != nil {
 		s.redirectErr(w, r, "/apps", "app not found")
+		return
+	}
+	if !s.guardHTMLIdle(w, r, a.ID) {
 		return
 	}
 	domain := strings.TrimSpace(r.FormValue("domain"))
@@ -109,6 +123,9 @@ func (s *Server) handleDomainRemove(w http.ResponseWriter, r *http.Request) {
 		s.redirectErr(w, r, "/apps", "app not found")
 		return
 	}
+	if !s.guardHTMLIdle(w, r, a.ID) {
+		return
+	}
 	domain := chi.URLParam(r, "domain")
 	if err := s.detachDomain(r.Context(), a, domain); err != nil {
 		s.recordAudit(r, audit.ActionDomainRemove, "app", a.ID, a.Name, audit.OutcomeFailure, err.Error())
@@ -119,27 +136,32 @@ func (s *Server) handleDomainRemove(w http.ResponseWriter, r *http.Request) {
 	s.redirectOK(w, r, "/apps/"+a.Name, fmt.Sprintf("Domain %s detached.", domain))
 }
 
-func (s *Server) regenerateTraefik(ctx context.Context, a *store.App) {
+func (s *Server) regenerateTraefik(ctx context.Context, a *store.App) error {
 	domains, err := s.Store.GetAppDomains(ctx, a.ID)
 	if err != nil {
-		return
+		return err
+	}
+	appName := a.Slug
+	if appName == "" {
+		appName = a.Name
 	}
 	if len(domains) == 0 && (s.Cfg.PublicHost == "" || s.Cfg.AppPathPrefix == "") {
-		_ = s.TraefikW.Remove(a.Slug)
-		return
+		return s.TraefikW.Remove(appName)
 	}
 	spec, err := composer.Parse([]byte(a.ComposeYAML))
 	if err != nil {
-		return
+		_ = s.TraefikW.Remove(appName)
+		return err
 	}
-	_, _ = traefik.ApplyAppRoute(ctx, traefik.AppOptions{
+	_, err = traefik.ApplyAppRoute(ctx, traefik.AppOptions{
 		Writer:          s.TraefikW,
 		Client:          s.Cli,
-		AppName:         a.Slug,
+		AppName:         appName,
 		Spec:            spec,
 		Domains:         domains,
 		PublicHost:      s.Cfg.PublicHost,
 		AppPathPrefix:   s.Cfg.AppPathPrefix,
 		RootlessGateway: s.Cfg.RootlessGateway,
 	})
+	return err
 }

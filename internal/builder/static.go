@@ -30,40 +30,44 @@ var wellKnownBuildDirs = []string{
 // It is injected as <base href="..."> into every HTML response so absolute
 // paths like "/dist/css/app.css" resolve correctly under the prefix.
 //
-// WriteStaticFiles writes both Dockerfile and (when needed) nginx.conf into
-// destDir so the synth compose can build from them. Lives in builder (not
-// web) because the deployer and the CLI both regenerate it on redeploy.
-func WriteStaticFiles(destDir, baseHref string) (string, error) {
+// WriteStaticFiles writes both Dockerfile and nginx.conf into destDir so
+// the synth compose can build from them. The optional port is used by
+// callers that publish a non-default container port; archive drops retain
+// the historical port 80 default.
+func WriteStaticFiles(destDir, baseHref string, ports ...int) (string, error) {
+	port := 80
+	if len(ports) > 0 && ports[0] > 0 {
+		port = ports[0]
+	}
 	root := detectStaticRoot(destDir)
 	var dockerfile string
 	if root == "" || root == "." {
-		dockerfile = "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\n"
+		dockerfile = "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nCOPY nginx.conf /etc/nginx/conf.d/default.conf\n"
 	} else {
 		dockerfile = fmt.Sprintf(`FROM nginx:alpine
 COPY %s /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 `, root) + "\n"
-		conf := staticNginxConf(baseHref)
-		if err := os.WriteFile(filepath.Join(destDir, "nginx.conf"), []byte(conf), 0o644); err != nil {
-			return "", err
-		}
 	}
-	if err := os.WriteFile(filepath.Join(destDir, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
+	if err := writeGeneratedFile(destDir, "nginx.conf", []byte(staticNginxConfPort(baseHref, port)), 0o644); err != nil {
+		return "", err
+	}
+	if err := writeGeneratedFile(destDir, "Dockerfile", []byte(dockerfile), 0o644); err != nil {
 		return "", err
 	}
 	return root, nil
 }
 
-func staticNginxConf(baseHref string) string {
+func staticNginxConfPort(baseHref string, port int) string {
 	// sub_filter injects <base href="..."> right after <head> so the
 	// browser resolves absolute paths (/dist/css/app.css) against the
 	// app's mount prefix instead of the host root. When the app is
 	// served at the subdomain root (baseHref == "/"), there's nothing
 	// useful to inject — skip the sub_filter block entirely so we don't
 	// ship a config that confuses operators reading it.
-	body := `server {
-    listen       80;
-    listen  [::]:80;
+	body := fmt.Sprintf(`server {
+    listen       %d;
+    listen  [::]:%d;
     server_name  _;
 
     root   /usr/share/nginx/html;
@@ -72,7 +76,7 @@ func staticNginxConf(baseHref string) string {
     location / {
         try_files $uri $uri/ =404;
     }
-`
+`, port, port)
 	if baseHref != "" && baseHref != "/" {
 		// Escape any double quotes for safety; baseHref is a URL prefix
 		// that we control (constructed from app name + configured prefix).

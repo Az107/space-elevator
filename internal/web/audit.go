@@ -45,6 +45,10 @@ func (s *Server) recordAudit(r *http.Request, action, targetType, targetID, targ
 // (async deploys), whose own context is cancelled when the handler
 // returns.
 func (s *Server) backgroundAuditCtx(r *http.Request) context.Context {
-	ctx := audit.WithActor(context.Background(), s.auditActor(r))
+	base := s.lifecycleCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx := audit.WithActor(base, s.auditActor(r))
 	return audit.WithRequest(ctx, clientIP(r), r.UserAgent())
 }

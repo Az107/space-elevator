@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	stdlog "log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,19 +34,23 @@ import (
 const maxRequestBody = 128 << 20
 
 type Server struct {
-	Cfg          *config.Config
-	Store        *store.Store
-	Renderer     *Renderer
-	Cli          *podman.Client
-	Runtime      *composer.Runtime
-	Deployer     *deployer.Deployer
-	TraefikW     *traefik.Writer
-	CSRF         *CSRF
-	Audit        *audit.Logger
-	TokenManager *tokenmanager.Client
-	BuildLogs    *buildLogRegistry
-	logins       *loginLimiter
-	deploySem    chan struct{}
+	Cfg             *config.Config
+	Store           *store.Store
+	Renderer        *Renderer
+	Cli             *podman.Client
+	Runtime         *composer.Runtime
+	Deployer        *deployer.Deployer
+	TraefikW        *traefik.Writer
+	CSRF            *CSRF
+	Audit           *audit.Logger
+	TokenManager    *tokenmanager.Client
+	BuildLogs       *buildLogRegistry
+	DeployRunner    *deploymentRunner
+	logins          *loginLimiter
+	deploySem       chan struct{}
+	shutdownOnce    sync.Once
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -53,16 +59,28 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A service restart must not leave a deployment looking active forever.
+	// The current worker is in-process, so active rows at startup belong to
+	// an interrupted run and are made retryable before the new worker starts.
+	if err := st.InterruptActiveOperations(context.Background()); err != nil {
+		st.Close()
+		return nil, fmt.Errorf("recover interrupted deployments: %w", err)
+	}
 	cli, err := podman.New(cfg.SocketPath)
 	if err != nil {
+		st.Close()
 		return nil, err
 	}
 	r, err := NewRenderer()
 	if err != nil {
+		_ = cli.Close()
+		st.Close()
 		return nil, err
 	}
 	csrf, err := loadCSRFKey(cfg.StateDir)
 	if err != nil {
+		_ = cli.Close()
+		st.Close()
 		return nil, err
 	}
 	rt := composer.NewRuntime(cli, cfg.AppsRoot).WithLimits(cfg.DefaultMemoryBytes, cfg.DefaultPidsLimit)
@@ -70,6 +88,8 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	au := audit.New(st, os.Stderr)
 	dep := deployer.New(st, rt, cli, tw, deployer.Options{
 		AppsRoot:        cfg.AppsRoot,
+		BackupDir:       cfg.BackupDir,
+		PodmanSocket:    cfg.SocketPath,
 		PublicHost:      cfg.PublicHost,
 		AppPathPrefix:   cfg.AppPathPrefix,
 		RootlessGateway: cfg.RootlessGateway,
@@ -81,27 +101,58 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		tm, err = tokenmanager.New(cfg.TokenManagerURL, cfg.TokenManagerClientID, cfg.TokenManagerClientSecret)
 		if err != nil {
 			st.Close()
+			_ = cli.Close()
 			return nil, fmt.Errorf("configure Token-Manager: %w", err)
 		}
 	} else if cfg.TokenManagerPartiallyConfigured() {
 		st.Close()
+		_ = cli.Close()
 		return nil, fmt.Errorf("configure Token-Manager: URL, client ID, and client secret must be set together")
 	}
+	runner := newDeploymentRunner(2)
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &Server{
-		Cfg:          cfg,
-		Store:        st,
-		Renderer:     r,
-		Cli:          cli,
-		Runtime:      rt,
-		Deployer:     dep,
-		TraefikW:     tw,
-		CSRF:         csrf,
-		Audit:        au,
-		TokenManager: tm,
-		BuildLogs:    newBuildLogRegistry(),
-		logins:       newLoginLimiter(),
-		deploySem:    make(chan struct{}, 2),
+		Cfg:             cfg,
+		Store:           st,
+		Renderer:        r,
+		Cli:             cli,
+		Runtime:         rt,
+		Deployer:        dep,
+		TraefikW:        tw,
+		CSRF:            csrf,
+		Audit:           au,
+		TokenManager:    tm,
+		BuildLogs:       newBuildLogRegistry(),
+		DeployRunner:    runner,
+		logins:          newLoginLimiter(),
+		deploySem:       make(chan struct{}, 2),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}, nil
+}
+
+// Shutdown stops background deployment workers before closing the Podman and
+// SQLite handles. Callers should invoke it after the HTTP server has stopped
+// accepting requests; active workers are allowed to finish their current
+// deploy, while queued work remains retryable in SQLite.
+func (s *Server) Shutdown() {
+	if s == nil {
+		return
+	}
+	s.shutdownOnce.Do(func() {
+		if s.lifecycleCancel != nil {
+			s.lifecycleCancel()
+		}
+		if s.DeployRunner != nil {
+			s.DeployRunner.stopRunner()
+		}
+		if s.Cli != nil {
+			_ = s.Cli.Close()
+		}
+		if s.Store != nil {
+			_ = s.Store.Close()
+		}
+	})
 }
 
 func (s *Server) Routes() http.Handler {
@@ -135,11 +186,14 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/apps/upload", s.apiUploadApp)
 		r.Get("/apps/{name}", s.apiGetApp)
 		r.Post("/apps/{name}/redeploy", s.apiRedeployApp)
+		r.Post("/apps/{name}/update", s.apiUpdateApp)
+		r.Post("/apps/{name}/update/upload", s.apiUpdateUploadApp)
 		r.Post("/apps/{name}/restart", s.apiRestartApp)
 		r.Post("/apps/{name}/start", s.apiStartApp)
 		r.Post("/apps/{name}/stop", s.apiStopApp)
 		r.Post("/apps/{name}/rename", s.apiRenameApp)
 		r.Delete("/apps/{name}", s.apiDeleteApp)
+		r.Get("/deployments/{id}", s.handleDeploymentAPI)
 		// Logs reuse the CLI-style text endpoint (no SSE for API v1).
 		r.Get("/apps/{name}/logs", s.handleLogs)
 		r.Put("/apps/{name}/env", s.apiPutAppEnv)
@@ -159,11 +213,18 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/apps/new", s.handleDeployForm)
 		r.Post("/apps/new", s.handleDeploySubmit)
 		r.Post("/apps/drop", s.handleDrop)
+		r.Get("/deployments/{id}", s.handleDeploymentDetail)
+		r.Get("/deployments/{id}/status", s.handleDeploymentStatus)
+		r.Post("/deployments/{id}/retry", s.handleDeploymentRetry)
 		r.Get("/apps/{name}", s.handleAppDetail)
 		r.Post("/apps/{name}/restart", s.handleAppRestart)
 		r.Post("/apps/{name}/start", s.handleAppStart)
 		r.Post("/apps/{name}/stop", s.handleAppStop)
 		r.Post("/apps/{name}/rename", s.handleAppRename)
+		r.Get("/apps/{name}/update", s.handleAppUpdateForm)
+		r.Post("/apps/{name}/update", s.handleAppUpdateSubmit)
+		r.Get("/apps/{name}/build-settings", s.handleBuildSettingsForm)
+		r.Post("/apps/{name}/build-settings", s.handleBuildSettingsSubmit)
 		r.Post("/apps/{name}/redeploy", s.handleAppRedeploy)
 		r.Post("/apps/{name}/remove", s.handleAppRemove)
 		r.Get("/apps/{name}/logs", s.handleLogs)
@@ -327,10 +388,13 @@ func (s *Server) SetSessionCookie(w http.ResponseWriter, sid string) {
 
 // rotateSession deletes the session presented by the client, if any, so
 // a login never extends an existing session's life.
-func (s *Server) rotateSession(r *http.Request) {
+func (s *Server) rotateSession(r *http.Request) error {
 	if c, _ := r.Cookie(sessionCookieNm); c != nil && c.Value != "" {
-		_ = s.Store.DeleteSession(r.Context(), c.Value)
+		if err := s.Store.DeleteSession(r.Context(), c.Value); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
 	}
+	return nil
 }
 
 func (s *Server) createUserAndLogin(ctx context.Context, r *http.Request, w http.ResponseWriter, username, password string) error {
@@ -348,7 +412,9 @@ func (s *Server) createUserAndLogin(ctx context.Context, r *http.Request, w http
 // newSession mints a fresh 256-bit session token and stores only its
 // SHA-256 hash.
 func (s *Server) newSession(ctx context.Context, r *http.Request, w http.ResponseWriter, userID string) error {
-	s.rotateSession(r)
+	if err := s.rotateSession(r); err != nil {
+		return fmt.Errorf("rotate session: %w", err)
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return err

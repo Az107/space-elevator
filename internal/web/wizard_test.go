@@ -31,6 +31,8 @@ func TestDeployFormRendersWizard(t *testing.T) {
 		`name="language"`,
 		`name="entrypoint"`,
 		`name="tarball"`,
+		`name="build_mode" value="static"`,
+		`name="serve_path"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("wizard missing %q", want)
@@ -56,6 +58,11 @@ func TestDeploySubmitRejectsBadFunctionEntrypoint(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Function:") {
 		t.Errorf("expected a function validation error, got: %s", w.Body.String())
+	}
+	for _, want := range []string{`value="https://example.com/repo.git"`, `value="my-fn"`, `value="main"`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("validation response lost submitted value %q", want)
+		}
 	}
 	if _, err := s.Store.GetAppByName(t.Context(), "my-fn"); err == nil {
 		t.Error("no app row should be created for an invalid function")

@@ -39,6 +39,7 @@
           <button type="submit" class="btn subtle visible sm">{{ template "i-restart" }}<span class="btn-label">Restart</span></button>
         </form>
       </div>
+      <a href="/apps/{{ .App.Name }}/update" class="btn subtle visible sm">{{ template "i-redeploy" }}<span class="btn-label">Update</span></a>
       <form action="/apps/{{ .App.Name }}/redeploy" method="post"
             data-confirm="Redeploy {{ .App.Name }} from its stored source?"
             data-confirm-title="Redeploy app" data-busy>
@@ -47,7 +48,7 @@
       </form>
       <span class="sep" aria-hidden="true"></span>
       <form action="/apps/{{ .App.Name }}/remove" method="post"
-            data-confirm="Remove {{ .App.Name }}? This cannot be undone."
+            data-confirm="Remove {{ .App.Name }}? Containers and source are deleted, but persistent data is retained for recovery."
             data-confirm-title="Remove app" data-confirm-variant="danger" data-busy>
         <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
         <button type="submit" class="btn subtle visible danger sm">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>
@@ -86,7 +87,7 @@
     {{ end }}
     <div>
       <span class="k">Build</span>
-      <span class="v">{{ if eq .App.BuildMode "custom" }}<span class="mono">custom</span><span class="mono" title="{{ .App.BuildCommand }}">{{ .App.BuilderImage }} → {{ .App.RunCommand }}</span>{{ else }}<span class="muted">compose</span>{{ end }}</span>
+      <span class="v">{{ if eq .App.BuildMode "custom" }}<span class="mono">custom</span><span class="mono" title="{{ .App.BuildCommand }}">{{ .App.BuilderImage }} → {{ .App.RunCommand }}</span>{{ else if eq .App.BuildMode "static" }}<span class="mono">static</span><span class="mono" title="{{ .App.BuildCommand }}">{{ .App.BuilderImage }} → {{ if .App.ServePath }}{{ .App.ServePath }}{{ else }}repository root{{ end }}</span>{{ else }}<span class="muted">compose</span>{{ end }}</span>
     </div>
     <div>
       <span class="k">Services</span>
@@ -106,9 +107,12 @@
         <span class="spinner" aria-hidden="true"></span>
         <span id="deploy-stage">Deploying…</span>
         <ol class="progress-steps" id="deploy-steps">
+          <li data-stage="preflight">Preflight</li>
           <li data-stage="clone">Clone</li>
           <li data-stage="compose">Compose</li>
-          <li data-stage="deploy">Build</li>
+          <li data-stage="build">Build</li>
+          <li data-stage="backup">Backup</li>
+          <li data-stage="deploy">Start</li>
           <li data-stage="route">Route</li>
         </ol>
       </div>
@@ -210,4 +214,23 @@
       <iframe id="files-frame" src="/apps/{{ .App.Name }}/files" loading="lazy" title="Source files"></iframe>
     </section>
   </div>
+
+  {{ if .Operations }}
+  <section class="panel deployment-history">
+    <div class="panel-heading">
+      <h2>Deployment history</h2>
+      <span class="panel-note">last {{ len .Operations }}</span>
+    </div>
+    <div class="deployment-history-list">
+      {{ range .Operations }}
+      <a class="deployment-history-row" href="/deployments/{{ .ID }}">
+        <span class="history-op">{{ .OperationType }}</span>
+        <span class="history-status status-text-{{ .Status }}">{{ .Status }}</span>
+        <span class="history-step">{{ if .CurrentStep }}{{ .CurrentStep }}{{ else }}queued{{ end }}</span>
+        <time>{{ .CreatedAt.Format "2006-01-02 15:04" }}</time>
+      </a>
+      {{ end }}
+    </div>
+  </section>
+  {{ end }}
 </section>

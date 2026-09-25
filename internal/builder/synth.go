@@ -3,8 +3,6 @@ package builder
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -106,12 +104,12 @@ func WriteCustomBuild(destDir string, c CustomBuild) error {
 		return err
 	}
 	files := map[string]string{
-		"Dockerfile":   c.Dockerfile(),
-		"compose.yml":  c.Compose(),
+		"Dockerfile":    c.Dockerfile(),
+		"compose.yml":   c.Compose(),
 		".dockerignore": ".git\n",
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(destDir, name), []byte(body), 0o644); err != nil {
+		if err := writeGeneratedFile(destDir, name, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
 	}

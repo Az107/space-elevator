@@ -30,6 +30,20 @@ ENTRY = os.environ.get("SE_FUNCTION_ENTRYPOINT", "handler.py:handler")
 APP_DIR = os.environ.get("SE_FUNCTION_APPDIR", "/app")
 PORT = int(os.environ.get("PORT", "8080"))
 
+# Request-body ceiling, matching the Node adapter. A function container is
+# memory-limited, so an unbounded read lets one large POST OOM-kill it.
+MAX_BODY_BYTES = int(os.environ.get("SE_FUNCTION_MAX_BODY", str(32 * 1024 * 1024)))
+
+
+class RequestError(Exception):
+    """A malformed or oversized request, reported with its own status."""
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
 _handler = None
 _handler_err = None
 
@@ -80,12 +94,33 @@ class Adapter(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    def _read_body(self):
+        """Read the request body, bounded like the Node adapter.
+
+        Content-Length is a client-supplied hint, so it is used only to
+        reject early; the read itself is still capped. Without the cap a
+        single large POST can exhaust the container's memory, which the
+        platform then restarts and reports as an error.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise RequestError(400, "invalid Content-Length")
+        if length < 0:
+            raise RequestError(400, "invalid Content-Length")
+        if length > MAX_BODY_BYTES:
+            raise RequestError(413, "request body too large")
+        if length == 0:
+            return b""
+        body = self.rfile.read(length)
+        # Trust the stream, not the header: a client can understate the
+        # length to make us stop early, or the socket can deliver more.
+        if len(body) > MAX_BODY_BYTES:
+            raise RequestError(413, "request body too large")
+        return body
+
     def _build_event(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 0:
-            body_bytes = self.rfile.read(length)
-        else:
-            body_bytes = b""
+        body_bytes = self._read_body()
         is_base64 = False
         if body_bytes:
             try:
@@ -202,6 +237,11 @@ class Adapter(BaseHTTPRequestHandler):
             event = self._build_event()
             result = _handler(event, Context())
             self._respond(result)
+        except RequestError as exc:
+            # An oversized or malformed request is the caller's problem, not
+            # a handler crash: report it as 413/400 rather than 500.
+            self._send(exc.status, {"Content-Type": "application/json"},
+                       json.dumps({"errorMessage": exc.message, "errorType": "RequestError"}))
         except Exception as exc:  # noqa: BLE001 - surface to the caller
             sys.stderr.write(traceback.format_exc())
             self._send(500, {"Content-Type": "application/json"},

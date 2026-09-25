@@ -48,6 +48,9 @@ func init() {
 func runDomainAdd(cmd *cobra.Command, args []string) error {
 	appName := args[0]
 	domain := strings.ToLower(strings.TrimSpace(args[1]))
+	if !traefik.ValidDomain(domain) {
+		return fmt.Errorf("invalid domain %q: expected a plain hostname such as app.example.com", domain)
+	}
 
 	cfg := config.Default()
 	st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db"))
@@ -59,6 +62,9 @@ func runDomainAdd(cmd *cobra.Command, args []string) error {
 	app, err := st.GetAppByName(cmd.Context(), appName)
 	if err != nil {
 		return fmt.Errorf("app %q: %w", appName, err)
+	}
+	if err := refuseIfBusy(cmd.Context(), st, app.ID); err != nil {
+		return err
 	}
 	current, _ := st.GetAppDomains(cmd.Context(), app.ID)
 	for _, d := range current {
@@ -71,12 +77,19 @@ func runDomainAdd(cmd *cobra.Command, args []string) error {
 	if err := st.SetAppDomains(cmd.Context(), app.ID, updated); err != nil {
 		return err
 	}
-	return regenerateTraefik(cmd, cfg, st, app)
+	if err := regenerateTraefik(cmd, cfg, st, app); err != nil {
+		_ = st.SetAppDomains(cmd.Context(), app.ID, current)
+		return err
+	}
+	return nil
 }
 
 func runDomainRemove(cmd *cobra.Command, args []string) error {
 	appName := args[0]
 	domain := strings.ToLower(strings.TrimSpace(args[1]))
+	if !traefik.ValidDomain(domain) {
+		return fmt.Errorf("invalid domain %q: expected a plain hostname such as app.example.com", domain)
+	}
 
 	cfg := config.Default()
 	st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db"))
@@ -88,6 +101,9 @@ func runDomainRemove(cmd *cobra.Command, args []string) error {
 	app, err := st.GetAppByName(cmd.Context(), appName)
 	if err != nil {
 		return fmt.Errorf("app %q: %w", appName, err)
+	}
+	if err := refuseIfBusy(cmd.Context(), st, app.ID); err != nil {
+		return err
 	}
 	current, err := st.GetAppDomains(cmd.Context(), app.ID)
 	if err != nil {
@@ -108,7 +124,11 @@ func runDomainRemove(cmd *cobra.Command, args []string) error {
 	if err := st.SetAppDomains(cmd.Context(), app.ID, updated); err != nil {
 		return err
 	}
-	return regenerateTraefik(cmd, cfg, st, app)
+	if err := regenerateTraefik(cmd, cfg, st, app); err != nil {
+		_ = st.SetAppDomains(cmd.Context(), app.ID, current)
+		return err
+	}
+	return nil
 }
 
 func runDomainList(cmd *cobra.Command, _ []string) error {
@@ -174,7 +194,7 @@ func regenerateTraefik(cmd *cobra.Command, cfg *config.Config, st *store.Store, 
 		parts = append(parts, "domains="+strings.Join(domains, ","))
 	}
 	if cfg.PublicHost != "" && cfg.AppPathPrefix != "" {
-		parts = append(parts, "path=https://"+cfg.PublicHost+cfg.AppPathPrefix+app.Name+"/")
+		parts = append(parts, "path=https://"+cfg.PublicHost+cfg.AppPathPrefix+app.Slug+"/")
 	}
 	fmt.Printf("OK: app %s routes [%s]\n", app.Name, strings.Join(parts, " | "))
 	return nil

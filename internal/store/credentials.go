@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,10 @@ func (s *Store) UpsertCredential(ctx context.Context, c *GitCredential) error {
 	if c.ID == "" {
 		return errors.New("id required")
 	}
+	if strings.ContainsAny(c.Host, "/@:\x00\r\n\t ") || strings.ContainsRune(c.Token, 0) {
+		return errors.New("invalid credential host or token")
+	}
+	c.Host = strings.ToLower(strings.TrimSpace(c.Host))
 	now := time.Now()
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt = now
@@ -68,6 +73,7 @@ func (s *Store) ListCredentials(ctx context.Context) ([]*GitCredential, error) {
 		}
 		c.CreatedAt = time.Unix(created, 0)
 		c.UpdatedAt = time.Unix(updated, 0)
+		c.Token = ""
 		out = append(out, &c)
 	}
 	return out, rows.Err()

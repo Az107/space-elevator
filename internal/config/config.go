@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +23,8 @@ type Config struct {
 	SocketPath string
 	// DataDir holds long-lived data (uploads, checkouts).
 	DataDir string
+	// BackupDir holds update backups. Empty derives <DataDir>/backups.
+	BackupDir string
 	// StateDir holds the SQLite DB and CSRF key (owner-only).
 	StateDir string
 	// TraefikDir is the directory watched by a Traefik file provider. Empty
@@ -78,6 +81,7 @@ func BuiltinDefaults() *Config {
 		BindAddr:                 "127.0.0.1:8080",
 		SocketPath:               defaultSocket(),
 		DataDir:                  filepath.Join(home, ".local", "share", "space-elevator"),
+		BackupDir:                filepath.Join(home, ".local", "share", "space-elevator", "backups"),
 		StateDir:                 filepath.Join(home, ".local", "state", "space-elevator"),
 		TraefikDir:               "",
 		PublicHost:               "",
@@ -153,7 +157,9 @@ func Load(path string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	applyEnv(cfg)
+	if err := applyEnv(cfg); err != nil {
+		return nil, err
+	}
 	cfg.finalize()
 	return cfg, nil
 }
@@ -170,6 +176,9 @@ func MustLoad(path string) *Config {
 
 // finalize fills in derived values and normalizes prefixes.
 func (c *Config) finalize() {
+	if c.BackupDir == "" {
+		c.BackupDir = filepath.Join(c.DataDir, "backups")
+	}
 	if c.DashboardURL == "" {
 		_, port, err := net.SplitHostPort(c.BindAddr)
 		if err != nil || port == "" {
@@ -232,6 +241,41 @@ func (c *Config) Validate() []Issue {
 	if c.DefaultPidsLimit < 0 {
 		out = append(out, Issue{"error", "pids limit cannot be negative"})
 	}
+	if c.SocketPath == "" {
+		out = append(out, Issue{"error", "socket_path is empty"})
+	} else if !filepath.IsAbs(c.SocketPath) {
+		out = append(out, Issue{"error", "socket_path must be an absolute path"})
+	}
+	for _, entry := range []struct{ name, value string }{
+		{"data_dir", c.DataDir}, {"backup_dir", c.BackupDir}, {"state_dir", c.StateDir}, {"apps_root", c.AppsRoot},
+	} {
+		if entry.value == "" || !filepath.IsAbs(entry.value) {
+			out = append(out, Issue{"error", entry.name + " must be an absolute path"})
+		}
+	}
+	if c.QuadletDir != "" && !filepath.IsAbs(c.QuadletDir) {
+		out = append(out, Issue{"error", "quadlet_dir must be an absolute path"})
+	}
+	if c.TraefikDir != "" && !filepath.IsAbs(c.TraefikDir) {
+		out = append(out, Issue{"error", "traefik_dir must be an absolute path"})
+	}
+	if c.PublicHost != "" && (strings.ContainsAny(c.PublicHost, "/:@ \t\r\n") || strings.Contains(c.PublicHost, "..")) {
+		out = append(out, Issue{"error", "public_host must be a hostname without scheme, path, or port"})
+	}
+	for _, entry := range []struct{ name, value string }{{"public_path", c.PublicPath}, {"app_path_prefix", c.AppPathPrefix}} {
+		if entry.value != "" && (!strings.HasPrefix(entry.value, "/") || strings.Contains(entry.value, "..") || strings.ContainsAny(entry.value, "\x00\r\n")) {
+			out = append(out, Issue{"error", entry.name + " must be an absolute path without '..' or control characters"})
+		}
+	}
+	if c.RootlessGateway != "" && net.ParseIP(c.RootlessGateway) == nil {
+		out = append(out, Issue{"error", "rootless_gateway must be an IP address"})
+	}
+	if c.DashboardURL != "" {
+		u, err := url.Parse(c.DashboardURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			out = append(out, Issue{"error", "dashboard_url must be an http(s) URL"})
+		}
+	}
 	if c.PublicHost != "" && c.TraefikDir == "" {
 		out = append(out, Issue{"warning", "public_host is set but traefik_dir is empty: apps are only reachable via published host ports"})
 	}
@@ -266,15 +310,17 @@ func (c *Config) Errors() []string {
 
 // parseSizeBytes accepts a human-friendly size like "512M", "1G", "0" and
 // returns bytes. "0" or "" parses to 0 (no limit).
-func parseSizeBytes(s string) int64 {
+//
+// An unparseable value is an error, never 0. Returning 0 here would be a
+// silent fail-open: 0 means "unlimited" to the runtime, so a typo like
+// "512Mi" or "512mb" would quietly remove the container memory cap instead
+// of being reported.
+func parseSizeBytes(s string) (int64, error) {
+	s = strings.TrimSpace(s)
 	if s == "" || s == "0" {
-		return 0
+		return 0, nil
 	}
 	n := len(s)
-	if n < 2 {
-		v, _ := strconv.ParseInt(s, 10, 64)
-		return v
-	}
 	last := s[n-1]
 	mult := int64(1)
 	switch last {
@@ -288,11 +334,14 @@ func parseSizeBytes(s string) int64 {
 		mult = 1024 * 1024 * 1024
 		s = s[:n-1]
 	}
-	v, err := strconv.ParseInt(s, 10, 64)
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("invalid size %q: use a byte count or a K/M/G suffix (for example 512M)", s)
 	}
-	return v * mult
+	if v < 0 {
+		return 0, fmt.Errorf("invalid size %q: must not be negative", s)
+	}
+	return v * mult, nil
 }
 
 // FormatSizeBytes renders a byte count back to the compact "512M" form.
@@ -311,9 +360,22 @@ func FormatSizeBytes(v int64) string {
 	}
 }
 
-func parseInt64(s string) int64 {
-	v, _ := strconv.ParseInt(s, 10, 64)
-	return v
+// parseInt64 parses a base-10 integer. An unparseable value is an error
+// rather than 0, because 0 means "no limit" to the runtime and a typo would
+// otherwise silently remove the PID cap.
+func parseInt64(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q", s)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("invalid integer %q: must not be negative", s)
+	}
+	return v, nil
 }
 
 func defaultSocket() string {
@@ -344,6 +406,7 @@ func (c *Config) EnsureDirs() error {
 		perm os.FileMode
 	}{
 		{c.DataDir, 0o755},
+		{c.BackupDir, 0o700},
 		{c.StateDir, 0o700},
 		{c.AppsRoot, 0o755},
 	}
@@ -365,10 +428,11 @@ func envStr(dst *string, key string) {
 	}
 }
 
-func applyEnv(c *Config) {
+func applyEnv(c *Config) error {
 	envStr(&c.BindAddr, "SPACE_ELEVATOR_BIND_ADDR")
 	envStr(&c.SocketPath, "PODMAN_SOCKET")
 	envStr(&c.DataDir, "SPACE_ELEVATOR_DATA_DIR")
+	envStr(&c.BackupDir, "SPACE_ELEVATOR_BACKUP_DIR")
 	envStr(&c.StateDir, "SPACE_ELEVATOR_STATE_DIR")
 	envStr(&c.TraefikDir, "SPACE_ELEVATOR_TRAEFIK_DIR")
 	envStr(&c.PublicHost, "SPACE_ELEVATOR_PUBLIC_HOST")
@@ -381,17 +445,33 @@ func applyEnv(c *Config) {
 	envStr(&c.AppPathPrefix, "SPACE_ELEVATOR_APP_PATH_PREFIX")
 	envStr(&c.RootlessGateway, "SPACE_ELEVATOR_ROOTLESS_GATEWAY")
 	if v, ok := os.LookupEnv("SPACE_ELEVATOR_MEMORY_LIMIT"); ok {
-		c.DefaultMemoryBytes = parseSizeBytes(v)
+		size, err := parseSizeBytes(v)
+		if err != nil {
+			return fmt.Errorf("SPACE_ELEVATOR_MEMORY_LIMIT: %w", err)
+		}
+		c.DefaultMemoryBytes = size
 	}
 	if v, ok := os.LookupEnv("SPACE_ELEVATOR_PIDS_LIMIT"); ok {
-		c.DefaultPidsLimit = parseInt64(v)
+		n, err := parseInt64(v)
+		if err != nil {
+			return fmt.Errorf("SPACE_ELEVATOR_PIDS_LIMIT: %w", err)
+		}
+		c.DefaultPidsLimit = n
 	}
 	if v, ok := os.LookupEnv("SPACE_ELEVATOR_INSECURE_COOKIES"); ok {
-		c.InsecureCookies = v != ""
+		// Parse strictly. Treating "any non-empty string" as true meant
+		// SPACE_ELEVATER_INSECURE_COOKIES=false silently enabled the flag and
+		// stripped Secure from the session cookie.
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("SPACE_ELEVATOR_INSECURE_COOKIES: %q is not a boolean (use true or false)", v)
+		}
+		c.InsecureCookies = b
 	}
 	envStr(&c.TokenManagerURL, "SPACE_ELEVATOR_TOKEN_MANAGER_URL")
 	envStr(&c.TokenManagerClientID, "SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_ID")
 	envStr(&c.TokenManagerClientSecret, "SPACE_ELEVATOR_TOKEN_MANAGER_CLIENT_SECRET")
+	return nil
 }
 
 // EnvKeys lists every environment variable Load honors, for `config show`.
@@ -400,6 +480,7 @@ var EnvKeys = []string{
 	"SPACE_ELEVATOR_BIND_ADDR",
 	"PODMAN_SOCKET",
 	"SPACE_ELEVATOR_DATA_DIR",
+	"SPACE_ELEVATOR_BACKUP_DIR",
 	"SPACE_ELEVATOR_STATE_DIR",
 	"SPACE_ELEVATOR_TRAEFIK_DIR",
 	"SPACE_ELEVATOR_PUBLIC_HOST",

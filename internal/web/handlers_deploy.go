@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,27 +22,84 @@ import (
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
 
+type deployFormValues struct {
+	Kind           string
+	Source         string
+	BuildMode      string
+	URL            string
+	Ref            string
+	Image          string
+	Port           string
+	BuildCommand   string
+	RunCommand     string
+	ServePath      string
+	Language       string
+	RuntimeVersion string
+	Entrypoint     string
+	Name           string
+	Env            string
+}
+
+func defaultDeployFormValues() deployFormValues {
+	return deployFormValues{
+		Kind: store.KindWeb, Source: "git", BuildMode: store.BuildModeCompose,
+		Ref: "main", Language: "python",
+	}
+}
+
+func deployFormValuesFromRequest(r *http.Request) deployFormValues {
+	values := defaultDeployFormValues()
+	values.Kind = strings.TrimSpace(r.FormValue("kind"))
+	values.Source = strings.TrimSpace(r.FormValue("source"))
+	values.BuildMode = strings.TrimSpace(r.FormValue("build_mode"))
+	values.URL = r.FormValue("url")
+	values.Ref = strings.TrimSpace(r.FormValue("ref"))
+	values.Image = r.FormValue("image")
+	values.Port = r.FormValue("port")
+	values.BuildCommand = r.FormValue("build_cmd")
+	values.RunCommand = r.FormValue("run_cmd")
+	values.ServePath = r.FormValue("serve_path")
+	values.Language = r.FormValue("language")
+	values.RuntimeVersion = r.FormValue("runtime_version")
+	values.Entrypoint = r.FormValue("entrypoint")
+	values.Name = r.FormValue("name")
+	values.Env = r.FormValue("env")
+	if values.Kind == "" {
+		values.Kind = store.KindWeb
+	}
+	if values.Source == "" {
+		values.Source = "git"
+	}
+	if values.BuildMode == "" {
+		values.BuildMode = store.BuildModeCompose
+	}
+	if values.Ref == "" {
+		values.Ref = "main"
+	}
+	if values.Language == "" {
+		values.Language = "python"
+	}
+	return values
+}
+
 type deployFormData struct {
 	PageData
-	Error string
+	Error  string
+	Values deployFormValues
 }
 
 // deployTimeout bounds a full clone+build+run deploy so a stuck git
 // server or image build can't wedge a worker forever.
 const deployTimeout = 30 * time.Minute
 
-// trailing hyphens are disallowed so names can't be glued into double
-// dashes in downstream keys (image tags, Traefik router names).
-var appNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-
-// validAppName enforces URL/hostname/container-safe names up front, so
-// nothing downstream (paths, Traefik keys, redirects) ever sees junk.
+// validAppName delegates to the shared deployer validator so dashboard,
+// API, and CLI cannot drift on reserved or unsafe names.
 func validAppName(name string) bool {
-	return appNamePattern.MatchString(name)
+	return deployer.ValidAppName(name)
 }
 
 func (s *Server) handleDeployForm(w http.ResponseWriter, r *http.Request) {
-	s.Renderer.Render(w, r, "deploy.html", deployFormData{PageData: pageCtx(r, "New app")})
+	s.Renderer.Render(w, r, "deploy.html", deployFormData{PageData: pageCtx(r, "New app"), Values: defaultDeployFormValues()})
 }
 
 // handleDeploySubmit is the unified wizard endpoint. It dispatches on
@@ -51,17 +107,20 @@ func (s *Server) handleDeployForm(w http.ResponseWriter, r *http.Request) {
 // off the clone pipeline; upload deploys extract an archive and do the
 // same, sharing CreateUpload with the dropzone and CLI/API.
 func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
+	values := deployFormValuesFromRequest(r)
 	if err := r.ParseMultipartForm(32 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		s.Renderer.Render(w, r, "deploy.html", deployFormData{
-			PageData: pageCtx(r, "New app"),
-			Error:    "Could not parse form: " + err.Error(),
+			PageData: pageCtx(r, "New app"), Values: values,
+			Error: "Could not parse form: " + err.Error(),
 		})
 		return
 	}
+	// ParseMultipartForm may have populated additional values that were not
+	// available before parsing (notably multipart text fields).
+	values = deployFormValuesFromRequest(r)
 	fail := func(msg string) {
 		s.Renderer.Render(w, r, "deploy.html", deployFormData{
-			PageData: pageCtx(r, "New app"),
-			Error:    msg,
+			PageData: pageCtx(r, "New app"), Values: values, Error: msg,
 		})
 	}
 
@@ -87,16 +146,26 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordAudit(r, audit.ActionAppUpload, "app", app.ID, app.Name, audit.OutcomeSuccess, "archive "+app.SourceRef)
-		s.startUploadDeploy(s.backgroundAuditCtx(r), app)
-		http.Redirect(w, r, "/apps/"+app.Name, http.StatusSeeOther)
+		operation, opErr := s.Store.ClaimAppOperation(r.Context(), app.ID, audit.ActionAppDeploy)
+		if opErr != nil {
+			_ = s.deleteApp(r.Context(), app)
+			fail("Could not queue deployment: " + opErr.Error())
+			return
+		}
+		s.startUploadDeploy(s.backgroundAuditCtx(r), app, operation)
+		http.Redirect(w, r, "/deployments/"+operation.ID, http.StatusSeeOther)
 		return
 	}
 
-	repoURL := r.FormValue("url")
+	rawRepoURL := strings.TrimSpace(r.FormValue("url"))
+	repoURL := builder.NormalizeGitURL(rawRepoURL)
 	name := strings.ToLower(strings.TrimSpace(r.FormValue("name")))
-	ref := r.FormValue("ref")
+	ref := strings.TrimSpace(r.FormValue("ref"))
 	if ref == "" {
 		ref = "main"
+	}
+	if webRef, ok := builder.RefFromWebURL(rawRepoURL); ok && (ref == "" || ref == "main") {
+		ref = webRef
 	}
 	env, envBad := store.ParseKVLines(r.FormValue("env"))
 	secrets, secretBad := store.ParseKVLines(r.FormValue("secrets"))
@@ -114,30 +183,44 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Advanced section: a repo that isn't containerized gets a
-	// synthesized single-stage Dockerfile (builder image + build/run
-	// commands). Any of image/run_cmd switches to custom build mode.
+	// Web apps can use the repository's compose file, a command-based
+	// custom image, or the first-class static builder.
 	builderImage := strings.TrimSpace(r.FormValue("image"))
 	buildCmd := strings.TrimSpace(r.FormValue("build_cmd"))
 	runCmd := strings.TrimSpace(r.FormValue("run_cmd"))
-	port, portErr := builder.ParsePort(r.FormValue("port"))
-	custom := kind != store.KindFunction && (builderImage != "" || runCmd != "" || buildCmd != "")
-	if custom {
-		cb := builder.CustomBuild{
-			BuilderImage: builderImage,
-			BuildCommand: buildCmd,
-			RunCommand:   runCmd,
-			ListenPort:   port,
+	servePath := strings.TrimSpace(r.FormValue("serve_path"))
+	buildMode := strings.TrimSpace(r.FormValue("build_mode"))
+	staticBuild := kind == store.KindWeb && buildMode == store.BuildModeStatic
+	custom := kind != store.KindFunction && !staticBuild && (buildMode == store.BuildModeCustom || builderImage != "" || runCmd != "" || buildCmd != "")
+	port := 0
+	var portErr error
+	if staticBuild {
+		if r.FormValue("port") == "" {
+			port = builder.DefaultStaticListenPort
+		} else {
+			port, portErr = builder.ParsePort(r.FormValue("port"))
 		}
-		if err := cb.Validate(); err != nil {
-			fail("Advanced deploy: " + err.Error() + ".")
+		if builderImage == "" {
+			builderImage = "node:20-bookworm"
+		}
+		sb := builder.StaticBuild{BuilderImage: builderImage, BuildCommand: buildCmd, ServePath: servePath, ListenPort: port}
+		if err := sb.Validate(); err != nil {
+			fail("Static web build: " + err.Error() + ".")
 			return
 		}
-	}
-	if !custom && portErr == nil && r.FormValue("port") != "" {
-		// A port with no build settings means the user half-filled the
-		// advanced section; surface it instead of silently ignoring.
-		portErr = errors.New("builder image or run command required when setting a port")
+	} else {
+		port, portErr = builder.ParsePort(r.FormValue("port"))
+		if custom {
+			cb := builder.CustomBuild{BuilderImage: builderImage, BuildCommand: buildCmd, RunCommand: runCmd, ListenPort: port}
+			if err := cb.Validate(); err != nil {
+				fail("Advanced deploy: " + err.Error() + ".")
+				return
+			}
+		} else if portErr == nil && r.FormValue("port") != "" {
+			// A port with no build settings means the user half-filled the
+			// advanced section; surface it instead of silently ignoring.
+			portErr = errors.New("builder image or run command required when setting a port")
+		}
 	}
 	if portErr != nil {
 		fail("Advanced deploy: " + portErr.Error() + ".")
@@ -170,9 +253,11 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 	// DeployGit detects the pending row and takes the update path;
 	// secrets are stored there (values never touch the row).
 	appID := uuid.NewString()
-	buildMode := store.BuildModeCompose
+	appBuildMode := store.BuildModeCompose
 	if custom {
-		buildMode = store.BuildModeCustom
+		appBuildMode = store.BuildModeCustom
+	} else if staticBuild {
+		appBuildMode = store.BuildModeStatic
 	}
 	app := &store.App{
 		ID:             appID,
@@ -182,10 +267,11 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 		SourceRef:      repoURL,
 		GitRef:         ref,
 		Env:            env,
-		BuildMode:      buildMode,
+		BuildMode:      appBuildMode,
 		BuilderImage:   builderImage,
 		BuildCommand:   buildCmd,
 		RunCommand:     runCmd,
+		ServePath:      servePath,
 		ListenPort:     port,
 		Kind:           kind,
 		Runtime:        fb.Language,
@@ -204,7 +290,22 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit(r, audit.ActionAppCreate, "app", app.ID, app.Name, audit.OutcomeSuccess, "git "+repoURL+" ref "+ref)
 
+	operation, operationErr := s.Store.ClaimAppOperation(r.Context(), app.ID, audit.ActionAppDeploy)
+	if operationErr != nil {
+		_ = s.deleteApp(r.Context(), app)
+		fail("Could not queue deployment: " + operationErr.Error())
+		return
+	}
+	for k, v := range secrets {
+		if err := s.Store.SetSecret(r.Context(), app.ID, k, v); err != nil {
+			_ = s.deleteApp(r.Context(), app)
+			fail("Could not save deployment secrets: " + err.Error())
+			return
+		}
+	}
+
 	var buildReq *builder.CustomBuild
+	var staticReq *builder.StaticBuild
 	if custom {
 		buildReq = &builder.CustomBuild{
 			BuilderImage: builderImage,
@@ -212,22 +313,32 @@ func (s *Server) handleDeploySubmit(w http.ResponseWriter, r *http.Request) {
 			RunCommand:   runCmd,
 			ListenPort:   port,
 		}
+	} else if staticBuild {
+		staticReq = &builder.StaticBuild{
+			BuilderImage: builderImage,
+			BuildCommand: buildCmd,
+			ServePath:    servePath,
+			ListenPort:   port,
+		}
 	}
-	go s.deployAsync(s.backgroundAuditCtx(r), deployer.GitRequest{
-		Name:           name,
-		RepoURL:        repoURL,
-		Ref:            ref,
-		Env:            env,
-		Secrets:        secrets,
-		Build:          buildReq,
-		Kind:           kind,
-		Runtime:        fb.Language,
-		RuntimeVersion: fb.Version,
-		Entrypoint:     fb.Entrypoint,
-		ScaleToZero:    app.ScaleToZero,
-		IdleTimeout:    app.IdleTimeout,
+	s.submitDeployment(func() {
+		s.deployAsync(s.backgroundAuditCtx(r), deployer.GitRequest{
+			Name:           name,
+			RepoURL:        repoURL,
+			Ref:            ref,
+			Env:            env,
+			Secrets:        secrets,
+			Build:          buildReq,
+			StaticBuild:    staticReq,
+			Kind:           kind,
+			Runtime:        fb.Language,
+			RuntimeVersion: fb.Version,
+			Entrypoint:     fb.Entrypoint,
+			ScaleToZero:    app.ScaleToZero,
+			IdleTimeout:    app.IdleTimeout,
+		}, operation)
 	})
-	http.Redirect(w, r, "/apps/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, "/deployments/"+operation.ID, http.StatusSeeOther)
 }
 
 // createUploadFromRequest extracts the multipart archive and common
@@ -312,68 +423,145 @@ func (s *Server) createUploadFromRequest(r *http.Request) (*store.App, error) {
 // startUploadDeploy runs the shared redeploy pipeline for a freshly
 // created upload app in the background, streaming progress into the
 // app's build-log sink.
-func (s *Server) startUploadDeploy(base context.Context, app *store.App) {
-	d, sink := s.deploySinkFor(app.Slug)
-	go func() {
+func (s *Server) startUploadDeploy(base context.Context, app *store.App, operation *store.AppOperation) {
+	d, sink, progress := s.deploySinkFor(app.ID, operation)
+	s.submitDeployment(func() {
 		s.deploySem <- struct{}{}
 		defer func() { <-s.deploySem }()
+		var runErr error
 		defer func() {
 			if p := recover(); p != nil {
-				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal deploy panic: %v", p))
-				sink.Append(fmt.Sprintf("✕ internal deploy panic: %v", p))
+				runErr = fmt.Errorf("internal deploy panic: %v", p)
+				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", runErr.Error())
+				sink.Append("✕ " + runErr.Error())
+				progress.failure(runErr)
 			}
+			status := store.OperationStatusCompleted
+			if runErr != nil {
+				status = store.OperationStatusFailed
+			}
+			s.finishDeploymentOperation(operation, status, runErr)
 		}()
 		ctx, cancel := context.WithTimeout(base, deployTimeout)
 		defer cancel()
-		if err := d.Redeploy(ctx, app); err != nil {
+		if err := d.RedeployClaimed(ctx, app, operation); err != nil {
+			runErr = err
 			sink.Append("✕ deploy failed: " + err.Error())
+			progress.failure(err)
 			return
 		}
 		sink.Append("✓ deploy complete")
-	}()
+		progress.success()
+	})
+}
+
+// startRedeploy runs the stored-source redeploy path for web and API callers.
+func (s *Server) startRedeploy(base context.Context, app *store.App, operation *store.AppOperation) {
+	d, sink, progress := s.deploySinkFor(app.ID, operation)
+	s.submitDeployment(func() {
+		s.deploySem <- struct{}{}
+		defer func() { <-s.deploySem }()
+		var runErr error
+		defer func() {
+			if p := recover(); p != nil {
+				runErr = fmt.Errorf("internal redeploy panic: %v", p)
+				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", runErr.Error())
+				sink.Append("✕ " + runErr.Error())
+				progress.failure(runErr)
+			}
+			status := store.OperationStatusCompleted
+			if runErr != nil {
+				status = store.OperationStatusFailed
+			}
+			s.finishDeploymentOperation(operation, status, runErr)
+		}()
+		ctx, cancel := context.WithTimeout(base, deployTimeout)
+		defer cancel()
+		if err := d.RedeployClaimed(ctx, app, operation); err != nil {
+			runErr = err
+			sink.Append("✕ redeploy failed: " + err.Error())
+			progress.failure(err)
+			return
+		}
+		sink.Append("✓ redeploy complete")
+		progress.success()
+	})
 }
 
 // deploySinkFor returns a per-deploy copy of the deployer whose Log,
-// Stage and runtime hooks stream into the app's build-log sink, plus
-// the freshly reset sink. The shared deployer/runtime are never
-// mutated, so concurrent deploys don't interleave their feeds.
-func (s *Server) deploySinkFor(name string) (*deployer.Deployer, *buildLog) {
-	sink := s.BuildLogs.get(name)
+// Stage and runtime hooks stream into the app's compatibility build-log
+// cache and the durable operation feed. The shared deployer/runtime are
+// never mutated, so concurrent deploys don't interleave their feeds.
+func (s *Server) deploySinkFor(appID string, operation *store.AppOperation) (*deployer.Deployer, *buildLog, *deployProgress) {
+	app, _ := s.Store.GetApp(context.Background(), appID)
+	if app == nil && operation != nil {
+		app, _ = s.Store.GetApp(context.Background(), operation.AppID)
+	}
+	if app == nil {
+		app = &store.App{ID: appID, Name: appID, Slug: appID, Env: map[string]string{}}
+	}
+	sink := s.BuildLogs.get(app.Slug)
 	sink.Reset()
+	progress := newDeployProgress(s.Store, app, operation)
 	d := *s.Deployer
 	rt := *s.Deployer.Runtime
-	rt.Log = sink.Append
+	rt.Log = func(text string) {
+		sink.Append(text)
+		progress.log(text)
+	}
 	d.Runtime = &rt
-	d.Opts.Log = sink.appendf
-	d.Opts.Stage = sink.Stage
-	return &d, sink
+	d.Opts.Log = func(format string, args ...any) {
+		text := fmt.Sprintf(format, args...)
+		sink.Append(text)
+		progress.log(text)
+	}
+	d.Opts.Stage = func(stage string) {
+		sink.Stage(stage)
+		progress.stage(stage)
+	}
+	return &d, sink, progress
 }
 
 // deployAsync runs the shared deploy pipeline with bounded concurrency,
 // streaming progress and image-build output into the app's build log;
 // every failure is recorded on the app row by the deployer.
-func (s *Server) deployAsync(base context.Context, req deployer.GitRequest) {
+func (s *Server) deployAsync(base context.Context, req deployer.GitRequest, operation *store.AppOperation) {
 	s.deploySem <- struct{}{}
 	defer func() { <-s.deploySem }()
 
-	d, sink := s.deploySinkFor(req.Name)
+	appID := ""
+	if operation != nil {
+		appID = operation.AppID
+	}
+	d, sink, progress := s.deploySinkFor(appID, operation)
 
+	var runErr error
 	defer func() {
 		if p := recover(); p != nil {
-			if app, err := s.Store.GetAppByName(context.Background(), req.Name); err == nil {
-				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", fmt.Sprintf("internal deploy panic: %v", p))
+			runErr = fmt.Errorf("internal deploy panic: %v", p)
+			if app, dbErr := s.Store.GetApp(context.Background(), appID); dbErr == nil {
+				_ = s.Store.UpdateAppStatusErr(context.Background(), app.ID, "error", runErr.Error())
 			}
-			sink.Append(fmt.Sprintf("✕ internal deploy panic: %v", p))
+			sink.Append("✕ " + runErr.Error())
+			progress.failure(runErr)
 		}
+		status := store.OperationStatusCompleted
+		if runErr != nil {
+			status = store.OperationStatusFailed
+		}
+		s.finishDeploymentOperation(operation, status, runErr)
 	}()
 
 	ctx, cancel := context.WithTimeout(base, deployTimeout)
 	defer cancel()
-	if _, err := d.DeployGit(ctx, req); err != nil {
+	if _, err := d.DeployGitClaimed(ctx, req, operation); err != nil {
+		runErr = err
 		sink.Append("✕ deploy failed: " + err.Error())
+		progress.failure(err)
 		return
 	}
 	sink.Append("✓ deploy complete")
+	progress.success()
 }
 
 type deployStatusData struct {
@@ -393,11 +581,14 @@ func (s *Server) handleDeployStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
 	lines, seq := s.BuildLogs.Since(a.Slug, after)
+	for i := range lines {
+		lines[i].Text = boundedDeploymentLog(lines[i].Text)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(deployStatusData{
 		Status:    a.Status,
-		LastError: a.LastError,
+		LastError: boundedDeploymentError(a.LastError),
 		Seq:       seq,
 		Lines:     lines,
 	})
@@ -431,10 +622,16 @@ func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	operation, opErr := s.Store.ClaimAppOperation(r.Context(), app.ID, audit.ActionAppDeploy)
+	if opErr != nil {
+		_ = s.deleteApp(r.Context(), app)
+		jsonError(w, http.StatusInternalServerError, opErr.Error())
+		return
+	}
 	s.recordAudit(r, audit.ActionAppUpload, "app", app.ID, app.Name, audit.OutcomeSuccess, "archive "+app.SourceRef)
-	s.startUploadDeploy(s.backgroundAuditCtx(r), app)
+	s.startUploadDeploy(s.backgroundAuditCtx(r), app, operation)
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"name":%q}`, app.Name)
+	fmt.Fprintf(w, `{"name":%q,"operation_id":%q,"status_url":%q}`, app.Name, operation.ID, "/deployments/"+operation.ID)
 }
 
 func atoiDefault(s string, def int) int {

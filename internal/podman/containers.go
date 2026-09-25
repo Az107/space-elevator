@@ -2,6 +2,7 @@ package podman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -38,8 +39,12 @@ func (c *Client) ListContainersFiltered(ctx context.Context, all bool, f map[str
 	}
 	out := make([]Container, 0, len(cs))
 	for _, ctr := range cs {
+		id := ctr.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
 		out = append(out, Container{
-			ID:      ctr.ID[:12],
+			ID:      id,
 			Name:    strings.Join(ctr.Names, ", "),
 			Image:   ctr.Image,
 			State:   ctr.State,
@@ -72,17 +77,29 @@ func (c *Client) RemoveContainer(ctx context.Context, id string, force bool) err
 	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: force})
 }
 
+// ErrContainerNotFound reports that no container matched an ID prefix. It is
+// distinct from a transport/API failure so callers can skip a vanished
+// container without swallowing a real error.
+var ErrContainerNotFound = errors.New("container not found")
+
+// LookupID resolves a full or partial container ID.
+//
+// A failed Podman call must not be reported as "not found": callers such as
+// eachContainer, RemoveContainers, and InspectIPs skip on not-found, so
+// conflating the two lets Start report success having started nothing, and
+// lets RemoveContainers report success while containers survive to collide
+// with the next deployment.
 func (c *Client) LookupID(ctx context.Context, prefix string) (string, error) {
 	cs, err := c.ListContainersFiltered(ctx, true, map[string][]string{"id": {prefix}})
-	if err != nil || len(cs) == 0 {
-		return "", fmt.Errorf("not found")
+	if err != nil {
+		return "", fmt.Errorf("lookup container %q: %w", prefix, err)
 	}
 	for _, ctr := range cs {
 		if len(ctr.ID) >= len(prefix) && ctr.ID[:len(prefix)] == prefix {
 			return ctr.ID, nil
 		}
 	}
-	return "", fmt.Errorf("not found")
+	return "", fmt.Errorf("%w: %q", ErrContainerNotFound, prefix)
 }
 
 func formatPorts(ports []container.Port) []string {

@@ -95,7 +95,7 @@ var selfRouteShowCmd = &cobra.Command{
 func runSelfRouteShow(cmd *cobra.Command, _ []string) error {
 	c, cfg := resolveSelfRoute()
 	w := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver)
-	body, err := w.Read(traefik.SelfRouteFileName)
+	body, err := w.ReadSelf()
 	if err != nil {
 		exists, _ := w.SelfExists()
 		if !exists {

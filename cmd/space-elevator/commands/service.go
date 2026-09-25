@@ -53,15 +53,16 @@ var serviceInstallCmd = &cobra.Command{
 			envFile = service.DefaultEnvFile()
 		}
 		path, err := service.Install(service.Options{
-			BinPath: bin,
-			Addr:    cfg.BindAddr,
-			EnvFile: envFile,
+			BinPath:   bin,
+			Addr:      cfg.BindAddr,
+			EnvFile:   envFile,
+			UseConfig: true,
 		}, !serviceInstallNoEnable)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Installed %s\n", path)
-		fmt.Printf("  ExecStart: %s serve --addr %s\n", bin, cfg.BindAddr)
+		fmt.Printf("  ExecStart: %s serve (bind_addr=%s from config/env)\n", bin, cfg.BindAddr)
 		if envFile != "" {
 			fmt.Printf("  EnvironmentFile: %s\n", envFile)
 		}

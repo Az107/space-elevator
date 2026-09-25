@@ -111,6 +111,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 		{"bind_addr", cfg.BindAddr},
 		{"socket_path", cfg.SocketPath},
 		{"data_dir", cfg.DataDir},
+		{"backup_dir", cfg.BackupDir},
 		{"state_dir", cfg.StateDir},
 		{"traefik_dir", cfg.TraefikDir},
 		{"public_host", cfg.PublicHost},

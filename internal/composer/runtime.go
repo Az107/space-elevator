@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/albertoruiz/space-elevator/internal/podman"
+	"github.com/docker/docker/api/types/volume"
 )
 
 const (
@@ -66,25 +67,77 @@ func (r *Runtime) ImageTag(appName, service string) string {
 	return r.imageTag(appName, service)
 }
 
+// ReleaseImageTag returns an immutable tag for a candidate release. Release
+// IDs are generated UUIDs, so the image built for an update cannot overwrite
+// the image currently used by the previous release.
+func (r *Runtime) ReleaseImageTag(appName, service, releaseID string) string {
+	return "localhost/se/" + sanitize(appName) + "/" + sanitize(service) + ":" + sanitize(releaseID)
+}
+
 func (r *Runtime) containerName(appName, service string) string {
 	return "se-" + sanitize(appName) + "-" + sanitize(service)
 }
 
-// Deploy brings up an app: ensure network, build/pull images, create+start containers.
+// Deploy brings up an app: ensure network and storage, build/pull images,
+// then create and start containers. Update flows use Prepare and Activate
+// separately so a candidate can be built before the old release is stopped.
 func (r *Runtime) Deploy(ctx context.Context, meta AppMeta, spec *Spec, sourceDir string) error {
-	netName := r.networkName(meta.Name)
-	if err := r.ensureNetwork(ctx, netName); err != nil {
+	images, err := r.Prepare(ctx, meta, spec, sourceDir)
+	if err != nil {
+		return err
+	}
+	return r.Activate(ctx, meta, spec, sourceDir, images)
+}
+
+// Prepare validates runtime resources and builds or pulls every service image.
+// It does not create containers, so failure leaves an existing deployment
+// untouched.
+func (r *Runtime) Prepare(ctx context.Context, meta AppMeta, spec *Spec, sourceDir string) (map[string]string, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("compose spec is nil")
+	}
+	if err := r.ensureNetwork(ctx, r.networkName(meta.Name)); err != nil {
+		return nil, fmt.Errorf("ensure network: %w", err)
+	}
+	if err := r.ensureTopLevelVolumes(ctx, spec, meta); err != nil {
+		return nil, fmt.Errorf("ensure volumes: %w", err)
+	}
+	images := make(map[string]string, len(spec.Services))
+	for _, svcName := range TopologicalOrder(spec) {
+		image, err := r.prepareServiceImage(ctx, meta, svcName, spec.Services[svcName], spec, sourceDir)
+		if err != nil {
+			return nil, fmt.Errorf("service %q: %w", svcName, err)
+		}
+		images[svcName] = image
+	}
+	return images, nil
+}
+
+// Activate creates and starts containers from images already returned by
+// Prepare. No image build or pull happens here, keeping the downtime window
+// limited to storage cutover and container startup.
+func (r *Runtime) Activate(ctx context.Context, meta AppMeta, spec *Spec, sourceDir string, images map[string]string) error {
+	if spec == nil {
+		return fmt.Errorf("compose spec is nil")
+	}
+	if err := r.ensureNetwork(ctx, r.networkName(meta.Name)); err != nil {
 		return fmt.Errorf("ensure network: %w", err)
 	}
-
 	if err := r.ensureTopLevelVolumes(ctx, spec, meta); err != nil {
 		return fmt.Errorf("ensure volumes: %w", err)
 	}
-
-	order := TopologicalOrder(spec)
-	for _, svcName := range order {
-		svc := spec.Services[svcName]
-		if err := r.deployService(ctx, meta, svcName, svc, spec, sourceDir, netName); err != nil {
+	for _, svcName := range TopologicalOrder(spec) {
+		image := images[svcName]
+		if image == "" {
+			image = meta.ImageTags[svcName]
+		}
+		if image == "" {
+			image = spec.Services[svcName].Image
+		}
+		if image == "" {
+			return fmt.Errorf("service %q: prepared image is missing", svcName)
+		}
+		if err := r.activateService(ctx, meta, svcName, spec.Services[svcName], spec, sourceDir, r.networkName(meta.Name), image); err != nil {
 			return fmt.Errorf("service %q: %w", svcName, err)
 		}
 	}
@@ -105,31 +158,107 @@ func (r *Runtime) ensureNetwork(ctx context.Context, name string) error {
 	return err
 }
 
+func (r *Runtime) ensureManagedBind(meta AppMeta, ref string) error {
+	if !filepath.IsAbs(ref) {
+		return fmt.Errorf("managed bind path is not absolute")
+	}
+	if r.appsRoot == "" {
+		return os.MkdirAll(ref, 0o700)
+	}
+	root := filepath.Join(r.appsRoot, "data", meta.ID)
+	if info, err := os.Lstat(root); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("managed data root is a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	if _, err := containedPath(root, ref); err != nil {
+		return err
+	}
+	return os.MkdirAll(ref, 0o700)
+}
+
 func (r *Runtime) ensureTopLevelVolumes(ctx context.Context, spec *Spec, meta AppMeta) error {
-	// Named volumes are lazily created by podman when used in a mount.
-	// We only validate that names are sane and namespaced.
+	if spec == nil {
+		return fmt.Errorf("compose spec is nil")
+	}
+	for name, binding := range meta.Storage {
+		if name == "" {
+			return fmt.Errorf("invalid empty logical volume name")
+		}
+		if binding.Kind == StorageKindBind {
+			if err := r.ensureManagedBind(meta, binding.Ref); err != nil {
+				return fmt.Errorf("managed bind %q: %w", name, err)
+			}
+		}
+	}
 	for name := range spec.Volumes {
 		if name == "" || strings.Contains(name, "/") {
 			return fmt.Errorf("invalid volume name %q", name)
+		}
+		if meta.ID == "" {
+			return fmt.Errorf("app id is required to scope volume %q", name)
+		}
+		physical := ManagedVolumeName(meta.ID, name)
+		if binding, ok := meta.Storage[name]; ok && binding.Kind == StorageKindVolume && binding.Ref != "" {
+			physical = binding.Ref
+		}
+		if err := r.createVolume(ctx, physical, meta.Label); err != nil {
+			return err
+		}
+	}
+	for name, binding := range meta.Storage {
+		if binding.Kind != StorageKindVolume || binding.Ref == "" {
+			continue
+		}
+		if _, declared := spec.Volumes[name]; declared {
+			continue
+		}
+		if err := r.createVolume(ctx, binding.Ref, meta.Label); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (r *Runtime) deployService(ctx context.Context, meta AppMeta, svcName string, svc Service, spec *Spec, sourceDir, netName string) error {
+func (r *Runtime) createVolume(ctx context.Context, physical, appLabel string) error {
+	if existing, err := r.cli.InspectVolume(ctx, physical); err == nil && appLabel != "" {
+		if owner := existing.Labels[LabelApp]; owner != "" && owner != appLabel {
+			return fmt.Errorf("volume %q is already owned by app %q", physical, owner)
+		}
+	}
+	labels := map[string]string{}
+	if appLabel != "" {
+		labels[LabelApp] = appLabel
+		labels[LabelManaged] = "1"
+	}
+	if _, err := r.cli.CreateVolume(ctx, volume.CreateOptions{Name: physical, Labels: labels}); err != nil {
+		return fmt.Errorf("create volume %q: %w", physical, err)
+	}
+	return nil
+}
+
+func (r *Runtime) prepareServiceImage(ctx context.Context, meta AppMeta, svcName string, svc Service, spec *Spec, sourceDir string) (string, error) {
 	imageRef := svc.Image
 	if svc.Build != nil {
-		imageRef = r.imageTag(meta.Name, svcName)
+		if override := meta.ImageTags[svcName]; override != "" {
+			imageRef = override
+		} else {
+			imageRef = r.imageTag(meta.Name, svcName)
+		}
 		ctxDir := svc.Build.Context
 		if ctxDir == "" {
 			ctxDir = "."
 		}
-		absCtx := filepath.Join(sourceDir, ctxDir)
-		if err := r.writeBuildContextEnv(absCtx, meta.BuildEnv); err != nil {
-			return fmt.Errorf("build env: %w", err)
+		absCtx, err := resolveBuildContext(sourceDir, ctxDir)
+		if err != nil {
+			return "", fmt.Errorf("build context: %w", err)
 		}
-		// Plain app env also flows as --build-arg (works for
-		// Dockerfiles that declare matching ARG lines).
+		if err := r.writeBuildContextEnv(absCtx, meta.BuildEnv); err != nil {
+			return "", fmt.Errorf("build env: %w", err)
+		}
 		buildArgs := make(map[string]*string, len(meta.BuildEnv))
 		for k, v := range meta.BuildEnv {
 			v := v
@@ -137,38 +266,37 @@ func (r *Runtime) deployService(ctx context.Context, meta AppMeta, svcName strin
 		}
 		r.logf("building image %s (context %s)...", imageRef, ctxDir)
 		if err := r.cli.BuildImage(ctx, podman.BuildOptions{
-			ContextDir: absCtx,
-			Dockerfile: svc.Build.Dockerfile,
-			Tag:        imageRef,
-			BuildArgs:  buildArgs,
-			Log:        r.Log,
+			ContextDir: absCtx, Dockerfile: svc.Build.Dockerfile, Tag: imageRef,
+			BuildArgs: buildArgs, Log: r.Log,
 		}); err != nil {
-			return fmt.Errorf("build: %w", err)
+			return "", fmt.Errorf("build: %w", err)
 		}
 		r.logf("built image %s", imageRef)
-	} else {
-		r.logf("pulling image %s...", imageRef)
-		if err := r.cli.PullImage(ctx, imageRef); err != nil {
-			return fmt.Errorf("pull: %w", err)
-		}
-		r.logf("pulled image %s", imageRef)
+		return imageRef, nil
 	}
+	if imageRef == "" {
+		return "", fmt.Errorf("service has neither image nor build")
+	}
+	r.logf("pulling image %s...", imageRef)
+	if err := r.cli.PullImage(ctx, imageRef); err != nil {
+		return "", fmt.Errorf("pull: %w", err)
+	}
+	r.logf("pulled image %s", imageRef)
+	return imageRef, nil
+}
 
+func (r *Runtime) activateService(ctx context.Context, meta AppMeta, svcName string, svc Service, spec *Spec, sourceDir, netName, imageRef string) error {
 	env := ResolveEnv(svc.Environment, meta.Env)
 	envList := make([]string, 0, len(env))
 	for k, v := range env {
 		envList = append(envList, k+"="+v)
 	}
-
-	binds, err := r.resolveBinds(svc.Volumes, sourceDir, spec)
+	binds, err := r.resolveBindsWithStorageForApp(svc.Volumes, sourceDir, spec, meta.Storage, meta.ID)
 	if err != nil {
 		return fmt.Errorf("volumes: %w", err)
 	}
-
 	labels := mergeLabels(svc.Labels, map[string]string{
-		LabelApp:     meta.Label,
-		LabelService: svcName,
-		LabelManaged: "1",
+		LabelApp: meta.Label, LabelService: svcName, LabelManaged: "1",
 	})
 	if meta.Kind != "" {
 		labels[LabelKind] = meta.Kind
@@ -176,7 +304,6 @@ func (r *Runtime) deployService(ctx context.Context, meta AppMeta, svcName strin
 	if meta.ScaleToZero {
 		labels[LabelScaleToZero] = "1"
 	}
-
 	mem := meta.MemoryBytes
 	if mem == 0 {
 		mem = r.DefaultMemory
@@ -189,70 +316,31 @@ func (r *Runtime) deployService(ctx context.Context, meta AppMeta, svcName strin
 	if pids > 0 {
 		pidsPtr = &pids
 	}
-
 	opts := podman.CreateOptions{
-		Name:        r.containerName(meta.Name, svcName),
-		Image:       imageRef,
-		Env:         envList,
-		Cmd:         svc.Command,
-		Ports:       svc.Ports,
-		Binds:       binds,
-		Network:     netName,
-		Aliases:     []string{svcName},
-		Labels:      labels,
-		SecurityOpt: []string{"no-new-privileges:true"},
-		PidsLimit:   pidsPtr,
-		Memory:      mem,
-		// Drop the dangerous capabilities but keep what nginx-style
-		// entrypoints need: CHOWN for the tmp dir initialization,
-		// DAC_OVERRIDE for log writes as the unprivileged nginx user,
-		// FOWNER/FSETID/SETFCAP for chown'd temp dirs, SETUID/SETGID
-		// for the master/worker drop, KILL for reaping, NET_BIND_SERVICE
-		// to bind low ports, SYS_CHROOT for the chroot() inside the
-		// entrypoint.
+		Name: r.containerName(meta.Name, svcName), Image: imageRef, Env: envList,
+		Cmd: svc.Command, Ports: svc.Ports, Binds: binds, Network: netName,
+		Aliases: []string{svcName}, Labels: labels,
+		SecurityOpt: []string{"no-new-privileges:true"}, PidsLimit: pidsPtr, Memory: mem,
 		CapDrop: []string{
-			"CAP_NET_RAW",
-			"CAP_SYS_PTRACE",
-			"CAP_SYS_ADMIN",
-			"CAP_NET_ADMIN",
-			"CAP_SYS_MODULE",
-			"CAP_SYS_RAWIO",
-			"CAP_SYS_BOOT",
-			"CAP_AUDIT_WRITE",
-			"CAP_AUDIT_CONTROL",
-			"CAP_SYSLOG",
-			"CAP_SYS_TIME",
-			"CAP_SYS_TTY_CONFIG",
-			"CAP_MKNOD",
-			"CAP_LEASE",
-			"CAP_AUDIT_READ",
-			"CAP_BLOCK_SUSPEND",
-			"CAP_IPC_LOCK",
-			"CAP_IPC_OWNER",
-			"CAP_MAC_OVERRIDE",
-			"CAP_SYS_RESOURCE",
-			"CAP_SYS_NICE",
-			"CAP_SYS_PACCT",
-			"CAP_WAKE_ALARM",
+			"CAP_NET_RAW", "CAP_SYS_PTRACE", "CAP_SYS_ADMIN", "CAP_NET_ADMIN",
+			"CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_BOOT", "CAP_AUDIT_WRITE",
+			"CAP_AUDIT_CONTROL", "CAP_SYSLOG", "CAP_SYS_TIME",
+			"CAP_MKNOD", "CAP_LEASE", "CAP_AUDIT_READ", "CAP_BLOCK_SUSPEND",
+			"CAP_IPC_LOCK", "CAP_IPC_OWNER", "CAP_MAC_OVERRIDE", "CAP_SYS_RESOURCE",
+			"CAP_SYS_NICE", "CAP_SYS_PACCT", "CAP_SYS_BOOT", "CAP_WAKE_ALARM",
 		},
 	}
 	if meta.StaticDrop {
-		// Read-only root FS for synth nginx:alpine drops. nginx still
-		// needs to write to /var/cache/nginx, /var/run, /tmp — those
-		// are tmpfs.
 		opts.ReadonlyRootfs = true
 		opts.Tmpfs = map[string]string{
-			"/var/cache/nginx": "rw,size=16m",
-			"/var/run":         "rw,size=1m",
-			"/tmp":             "rw,size=16m",
+			"/var/cache/nginx": "rw,size=16m", "/var/run": "rw,size=1m", "/tmp": "rw,size=16m",
 		}
 	}
-	_, err = r.cli.CreateContainer(ctx, opts)
-	if err != nil {
+	if _, err := r.cli.CreateContainer(ctx, opts); err != nil {
 		return err
 	}
 	r.logf("starting container %s...", opts.Name)
-	return r.cli.StartContainer(ctx, r.containerName(meta.Name, svcName))
+	return r.cli.StartContainer(ctx, opts.Name)
 }
 
 // buildEnvMarker marks the managed .env.local so a later deploy can
@@ -266,32 +354,74 @@ const buildEnvMarker = "# generated by space-elevator (app env, build-time reads
 // requiring Dockerfile changes. A repo-provided .env.local is left
 // alone. Only plain env reaches the build context; secrets never do.
 func (r *Runtime) writeBuildContextEnv(absCtx string, env map[string]string) error {
+	realCtx, err := filepath.EvalSymlinks(absCtx)
+	if err != nil {
+		return fmt.Errorf("resolve build context: %w", err)
+	}
+	path := filepath.Join(realCtx, ".env.local")
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to overwrite symlink %q", path)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		return readErr
+	}
+	managed := readErr == nil && strings.SplitN(string(existing), "\n", 2)[0] == buildEnvMarker
+
 	if len(env) == 0 {
+		if managed {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
 		return nil
 	}
+
 	keys := make([]string, 0, len(env))
-	for k := range env {
+	for k, value := range env {
+		if strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("build env %q contains a line break or NUL", k)
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	path := filepath.Join(absCtx, ".env.local")
-	if existing, err := os.ReadFile(path); err == nil {
-		lines := strings.SplitN(string(existing), "\n", 2)
-		if lines[0] != buildEnvMarker {
-			r.logf("note: build context ships its own .env.local; leaving it untouched (app env still passed as build args)")
-			return nil
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+	if readErr == nil && !managed {
+		r.logf("note: build context ships its own .env.local; leaving it untouched (app env still passed as build args)")
+		return nil
 	}
-
 	var b strings.Builder
 	b.WriteString(buildEnvMarker + "\n")
 	for _, k := range keys {
 		b.WriteString(k + "=" + env[k] + "\n")
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+	tmp, err := os.CreateTemp(realCtx, ".space-elevator-env-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return err
 	}
 	r.logf("injected %d env var(s) into the build context (.env.local)", len(keys))
@@ -305,34 +435,54 @@ func (r *Runtime) writeBuildContextEnv(absCtx string, env map[string]string) err
 // the container. Only named volumes and paths relative to the app's own
 // source dir (contained there) are allowed.
 func (r *Runtime) resolveBinds(mounts []string, sourceDir string, spec *Spec) ([]string, error) {
+	return r.resolveBindsWithStorage(mounts, sourceDir, spec, nil)
+}
+
+func (r *Runtime) resolveBindsWithStorage(mounts []string, sourceDir string, spec *Spec, storage map[string]StorageBinding) ([]string, error) {
+	return r.resolveBindsWithStorageForApp(mounts, sourceDir, spec, storage, "")
+}
+
+func (r *Runtime) resolveBindsWithStorageForApp(mounts []string, sourceDir string, spec *Spec, storage map[string]StorageBinding, appID string) ([]string, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("compose spec is nil")
+	}
 	out := make([]string, 0, len(mounts))
-	for _, m := range mounts {
-		parts := strings.SplitN(m, ":", 3)
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("invalid volume %q", m)
+	for _, raw := range mounts {
+		mount, err := ParseVolumeMount(raw)
+		if err != nil {
+			return nil, err
 		}
-		src := parts[0]
-		// Named volume: defined in spec.Volumes or syntactically (not a path)
-		if _, ok := spec.Volumes[src]; ok {
-			out = append(out, m)
-			continue
+		physical := mount.Source
+		if strings.HasPrefix(mount.Source, "/") {
+			return nil, fmt.Errorf("volume %q: absolute host paths are not allowed", raw)
 		}
-		if strings.HasPrefix(src, "/") {
-			return nil, fmt.Errorf("volume %q: absolute host paths are not allowed", m)
-		}
-		if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") {
-			// Resolve relative paths against the app's source dir and
-			// refuse any result that escapes it.
-			abs := filepath.Join(sourceDir, src)
-			rel, err := filepath.Rel(sourceDir, abs)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-				return nil, fmt.Errorf("volume %q: path escapes the app source dir", m)
+		key := CanonicalStorageKey(mount.Source)
+		if _, declared := spec.Volumes[mount.Source]; !declared &&
+			(strings.HasPrefix(mount.Source, "./") || strings.HasPrefix(mount.Source, "../")) {
+			abs, err := containedPath(sourceDir, filepath.Join(sourceDir, mount.Source))
+			if err != nil {
+				return nil, fmt.Errorf("volume %q: %w", raw, err)
 			}
-			out = append(out, abs+":"+strings.Join(parts[1:], ":"))
-			continue
+			physical = abs
+			if binding, ok := storage[key]; ok && binding.Kind == StorageKindBind && !mount.ReadOnly {
+				if !filepath.IsAbs(binding.Ref) {
+					return nil, fmt.Errorf("volume %q: managed bind path is not absolute", raw)
+				}
+				physical = binding.Ref
+			}
+		} else {
+			if appID != "" {
+				physical = ManagedVolumeName(appID, key)
+			}
+			if binding, ok := storage[key]; ok && binding.Ref != "" {
+				physical = binding.Ref
+			}
 		}
-		// Treat as named volume
-		out = append(out, m)
+		value := physical + ":" + mount.Target
+		if mount.Mode != "" && mount.Mode != "rw" {
+			value += ":" + mount.Mode
+		}
+		out = append(out, value)
 	}
 	return out, nil
 }
@@ -346,9 +496,16 @@ func (r *Runtime) Start(ctx context.Context, meta AppMeta) error {
 }
 
 // Stop stops every container of an app, preserving them for a later Start.
+// It is idempotent: a container that is already stopped is not an error.
+// That matters for the update transaction, which calls Stop on an app whose
+// Status may be "partial" — without this, a half-stopped app could never be
+// updated because the already-down container aborts the whole Stop.
 func (r *Runtime) Stop(ctx context.Context, meta AppMeta) error {
 	return r.eachContainer(ctx, meta, func(full string) error {
-		return r.cli.StopContainer(ctx, full, 10)
+		if err := r.cli.StopContainer(ctx, full, 10); err != nil && !alreadyStopped(err) {
+			return err
+		}
+		return nil
 	})
 }
 
@@ -356,7 +513,9 @@ func (r *Runtime) Stop(ctx context.Context, meta AppMeta) error {
 // time, so this does not pick up env/secret edits).
 func (r *Runtime) Restart(ctx context.Context, meta AppMeta) error {
 	return r.eachContainer(ctx, meta, func(full string) error {
-		_ = r.cli.StopContainer(ctx, full, 10)
+		if err := r.cli.StopContainer(ctx, full, 10); err != nil && !alreadyStopped(err) {
+			return fmt.Errorf("stop %s: %w", full, err)
+		}
 		return r.cli.StartContainer(ctx, full)
 	})
 }
@@ -373,35 +532,36 @@ func (r *Runtime) eachContainer(ctx context.Context, meta AppMeta, fn func(full 
 	if len(cs) == 0 {
 		return fmt.Errorf("no containers for %q; deploy it first", meta.Name)
 	}
+	handled := 0
 	for _, c := range cs {
 		full, err := r.cli.LookupID(ctx, c.ID)
-		if err != nil || full == "" {
+		if err != nil {
+			// Only a container that vanished between the list and the lookup
+			// is skippable. A transport error must abort, otherwise Start
+			// reports success having started nothing.
+			if errors.Is(err, podman.ErrContainerNotFound) {
+				continue
+			}
+			return err
+		}
+		if full == "" {
 			continue
 		}
 		if err := fn(full); err != nil {
 			return err
 		}
+		handled++
+	}
+	if handled == 0 && len(cs) > 0 {
+		return fmt.Errorf("none of the %d containers for %q could be resolved", len(cs), meta.Name)
 	}
 	return nil
 }
 
 // Remove tears down all containers + the network for an app. Volumes are preserved.
 func (r *Runtime) Remove(ctx context.Context, meta AppMeta, spec *Spec) error {
-	cs, err := r.cli.ListContainersFiltered(ctx, true, map[string][]string{
-		"label": {LabelApp + "=" + meta.Label},
-	})
-	if err != nil {
+	if err := r.RemoveContainers(ctx, meta); err != nil {
 		return err
-	}
-	for _, ctr := range cs {
-		full, err := r.cli.LookupID(ctx, ctr.ID)
-		if err != nil {
-			continue
-		}
-		_ = r.cli.StopContainer(ctx, full, 10)
-		if err := r.cli.RemoveContainer(ctx, full, true); err != nil {
-			return fmt.Errorf("remove %s: %w", full, err)
-		}
 	}
 	if err := r.cli.RemoveNetwork(ctx, r.networkName(meta.Name)); err != nil {
 		// ignore: network may already be gone
@@ -409,16 +569,46 @@ func (r *Runtime) Remove(ctx context.Context, meta AppMeta, spec *Spec) error {
 	return nil
 }
 
-func (r *Runtime) removeNetwork(ctx context.Context, name string) error {
-	if err := r.cli.RemoveNetwork(ctx, name); err != nil {
-		// ignore "not found"
-		return nil
+// RemoveContainers removes only app containers. Update cutover and rollback
+// use it to preserve the network and all persistent storage.
+func (r *Runtime) RemoveContainers(ctx context.Context, meta AppMeta) error {
+	cs, err := r.cli.ListContainersFiltered(ctx, true, map[string][]string{
+		"label": {LabelApp + "=" + meta.Label},
+	})
+	if err != nil {
+		return err
+	}
+	removed := 0
+	for _, ctr := range cs {
+		full, err := r.cli.LookupID(ctx, ctr.ID)
+		if err != nil {
+			if errors.Is(err, podman.ErrContainerNotFound) {
+				continue
+			}
+			// Propagating matters: silently skipping here would report a
+			// successful teardown while containers survive, and the next
+			// deploy would then collide on container names.
+			return err
+		}
+		if err := r.cli.StopContainer(ctx, full, 10); err != nil && !alreadyStopped(err) {
+			return fmt.Errorf("stop %s: %w", full, err)
+		}
+		if err := r.cli.RemoveContainer(ctx, full, true); err != nil {
+			return fmt.Errorf("remove %s: %w", full, err)
+		}
+		removed++
+	}
+	if removed == 0 && len(cs) > 0 {
+		return fmt.Errorf("none of the %d containers for %q could be removed", len(cs), meta.Name)
 	}
 	return nil
 }
 
 // Status computes the runtime status of an app.
 func (r *Runtime) Status(ctx context.Context, meta AppMeta, spec *Spec) (string, []ContainerInfo, error) {
+	if spec == nil {
+		return "error", nil, fmt.Errorf("compose spec is nil")
+	}
 	cs, err := r.cli.ListContainersFiltered(ctx, true, map[string][]string{
 		"label": {LabelApp + "=" + meta.Label},
 	})
@@ -483,6 +673,14 @@ func (r *Runtime) Logs(ctx context.Context, meta AppMeta, service string, follow
 		}
 	}
 	return r.cli.ContainerLogs(ctx, pick, follow, tail)
+}
+
+func alreadyStopped(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not running") || strings.Contains(message, "already stopped")
 }
 
 func mergeLabels(a, b map[string]string) map[string]string {

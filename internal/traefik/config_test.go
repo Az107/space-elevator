@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestRenderRejectsRuleInjection(t *testing.T) {
+	_, err := Render(AppRouteConfig{
+		Routes: []ServiceRoute{{AppName: "app", Name: "web", Domain: []string{"evil` || Host(`x`"}, IP: "127.0.0.1", Port: 80}},
+	})
+	if err == nil {
+		t.Fatal("route domain containing rule syntax was accepted")
+	}
+}
+
+func TestRenderDetectsServiceKeyCollision(t *testing.T) {
+	_, err := Render(AppRouteConfig{
+		Routes: []ServiceRoute{
+			{AppName: "a", Name: "b/c", IP: "127.0.0.1", Port: 80},
+			{AppName: "a", Name: "b-c", IP: "127.0.0.1", Port: 80},
+		},
+	})
+	if err == nil {
+		t.Fatal("colliding sanitized service keys were accepted")
+	}
+}
+
 func TestRenderSelf_HostOnly(t *testing.T) {
 	got, err := RenderSelf(SelfRouteConfig{
 		Host:         "elevator.albruiz.dev",

@@ -25,7 +25,7 @@ type Renderer struct {
 var assetVersions = map[string]string{}
 
 func computeAssetVersions() {
-	for _, p := range []string{"css/app.css", "js/app.js"} {
+	for _, p := range []string{"css/app.css", "js/app.js", "js/deployments.js"} {
 		f, err := Static().Open(p)
 		if err != nil {
 			continue
@@ -65,7 +65,7 @@ func NewRenderer() (*Renderer, error) {
 		},
 	}
 	pages, err := template.New("").Funcs(funcs).ParseFS(Pages(),
-		"apps.html", "app_detail.html", "deploy.html", "settings.html",
+		"apps.html", "app_detail.html", "deploy.html", "deployment.html", "build_settings.html", "update.html", "settings.html",
 		"login.html", "setup.html", "files.html", "icons.html")
 	if err != nil {
 		return nil, err

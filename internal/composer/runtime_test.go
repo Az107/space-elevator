@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,43 @@ func TestResolveBinds(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("app id scopes undeclared named volume", func(t *testing.T) {
+		out, err := r.resolveBindsWithStorageForApp([]string{"cache:/cache"}, sourceDir, spec, nil, "app-uuid")
+		if err != nil || len(out) != 1 || out[0] != ManagedVolumeName("app-uuid", "cache")+":/cache" {
+			t.Fatalf("out=%v err=%v", out, err)
+		}
+	})
+
+	t.Run("managed named volume and writable bind replace source", func(t *testing.T) {
+		storage := map[string]StorageBinding{
+			"dbdata": {Kind: StorageKindVolume, Ref: "se-vol-app-db"},
+			"data":   {Kind: StorageKindBind, Ref: "/persistent/app/data"},
+		}
+		out, err := r.resolveBindsWithStorage([]string{"dbdata:/var/lib/db:ro", "./data:/data"}, sourceDir, spec, storage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"se-vol-app-db:/var/lib/db:ro", "/persistent/app/data:/data"}
+		if !slices.Equal(out, want) {
+			t.Fatalf("out=%v, want %v", out, want)
+		}
+	})
+}
+
+func TestParseVolumeMount(t *testing.T) {
+	m, err := ParseVolumeMount("data:/var/lib/data:ro,Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Source != "data" || m.Target != "/var/lib/data" || !m.ReadOnly || m.Mode != "ro,Z" {
+		t.Fatalf("unexpected mount: %+v", m)
+	}
+	for _, bad := range []string{"data", ":/data", "data:relative", "a:b:c:d"} {
+		if _, err := ParseVolumeMount(bad); err == nil {
+			t.Errorf("ParseVolumeMount(%q) must fail", bad)
+		}
+	}
 }
 
 func TestWriteBuildContextEnv(t *testing.T) {

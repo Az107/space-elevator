@@ -15,21 +15,21 @@
       <legend>What are you deploying?</legend>
       <div class="choice-grid">
         <label class="choice">
-          <input type="radio" name="kind" value="web" checked>
+          <input type="radio" name="kind" value="web"{{ if eq .Values.Kind "web" }} checked{{ end }}>
           <span class="choice-body">
             <span class="choice-title">Web app</span>
             <span class="choice-desc">A compose stack, Dockerfile, or static site served over HTTP.</span>
           </span>
         </label>
         <label class="choice">
-          <input type="radio" name="kind" value="function">
+          <input type="radio" name="kind" value="function"{{ if eq .Values.Kind "function" }} checked{{ end }}>
           <span class="choice-body">
             <span class="choice-title">Function</span>
             <span class="choice-desc">A Python or Node handler invoked per request (Lambda-style).</span>
           </span>
         </label>
         <label class="choice">
-          <input type="radio" name="kind" value="custom">
+          <input type="radio" name="kind" value="custom"{{ if eq .Values.Kind "custom" }} checked{{ end }}>
           <span class="choice-body">
             <span class="choice-title">Container</span>
             <span class="choice-desc">Bring your own Dockerfile or advanced build settings.</span>
@@ -42,14 +42,14 @@
       <legend>Where is the code?</legend>
       <div class="choice-grid">
         <label class="choice">
-          <input type="radio" name="source" value="git" checked>
+          <input type="radio" name="source" value="git"{{ if eq .Values.Source "git" }} checked{{ end }}>
           <span class="choice-body">
             <span class="choice-title">Git repository</span>
             <span class="choice-desc">Clone and build on every deploy.</span>
           </span>
         </label>
         <label class="choice">
-          <input type="radio" name="source" value="upload">
+          <input type="radio" name="source" value="upload"{{ if eq .Values.Source "upload" }} checked{{ end }}>
           <span class="choice-body">
             <span class="choice-title">Upload archive</span>
             <span class="choice-desc">A <code>.tar.gz</code> or <code>.zip</code> of the source.</span>
@@ -61,11 +61,11 @@
     <fieldset class="wiz-step" data-when-source="git">
       <legend>Repository</legend>
       <label>Git URL
-        <input type="url" name="url" placeholder="https://github.com/you/repo.git">
+        <input type="url" name="url" value="{{ .Values.URL }}" placeholder="https://github.com/you/repo.git">
         <span class="hint">Private repos need a token — add one under Settings.</span>
       </label>
       <label>Ref
-        <input type="text" name="ref" value="main">
+        <input type="text" name="ref" value="{{ .Values.Ref }}">
       </label>
     </fieldset>
 
@@ -86,53 +86,102 @@
       <div class="form-grid-2">
         <label>Language
           <select name="language">
-            <option value="python">Python</option>
-            <option value="node">Node.js</option>
+            <option value="python"{{ if eq .Values.Language "python" }} selected{{ end }}>Python</option>
+            <option value="node"{{ if eq .Values.Language "node" }} selected{{ end }}>Node.js</option>
           </select>
         </label>
         <label>Runtime version
-          <input type="text" name="runtime_version" placeholder="3.12 or 20">
+          <input type="text" name="runtime_version" value="{{ .Values.RuntimeVersion }}" placeholder="3.12 or 20">
           <span class="hint">Plain tag, e.g. <code>3.12</code> / <code>20</code>. Defaults per language.</span>
         </label>
       </div>
       <label>Entrypoint
-        <input type="text" name="entrypoint" placeholder="handler.py:handler">
+        <input type="text" name="entrypoint" value="{{ .Values.Entrypoint }}" placeholder="handler.py:handler">
         <span class="hint">Convention: <code>handler.py:handler</code> (Python) or <code>index.js:handler</code> (Node). Override if your file or export differs.</span>
       </label>
       <p class="hint">Handlers receive an API Gateway-style event and can return <code>{ statusCode, headers, body }</code> or any JSON value. Containers run always-on for now; keep handlers stateless.</p>
     </fieldset>
 
-    <fieldset class="wiz-step" data-when-kind="web custom" data-when-source="git">
+    <fieldset class="wiz-step" data-when-kind="web">
+      <legend>Web build mode</legend>
+      <div class="choice-grid">
+        <label class="choice">
+          <input type="radio" name="build_mode" value="compose"{{ if eq .Values.BuildMode "compose" }} checked{{ end }}>
+          <span class="choice-body">
+            <span class="choice-title">Repository config</span>
+            <span class="choice-desc">Use compose.yml, Dockerfile, or an uploaded static site.</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="build_mode" value="server"{{ if eq .Values.BuildMode "server" }} checked{{ end }}>
+          <span class="choice-body">
+            <span class="choice-title">Run a server</span>
+            <span class="choice-desc">Use a custom builder image with build and serve commands.</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="build_mode" value="static"{{ if eq .Values.BuildMode "static" }} checked{{ end }}>
+          <span class="choice-body">
+            <span class="choice-title">Serve a static site</span>
+            <span class="choice-desc">Build the site and serve a repository path with Nginx.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-kind="web custom" data-when-source="git" data-hide-when-build-mode="static">
       <legend>Build settings <span class="opt">optional</span></legend>
       <details class="advanced">
         <summary>Not containerized? Build it here</summary>
         <p class="hint">For repos without a compose.yml or Dockerfile. The platform generates a Dockerfile from a base image plus your build &amp; run commands (single stage; build and run in the same image).</p>
         <div class="form-grid-2">
           <label>Builder image
-            <input type="text" name="image" placeholder="node:20-bookworm">
+            <input type="text" name="image" value="{{ .Values.Image }}" placeholder="node:20-bookworm">
           </label>
           <label>Listen port
-            <input type="number" name="port" min="1" max="65535" placeholder="8080">
+            <input type="number" name="port" min="1" max="65535" value="{{ .Values.Port }}" placeholder="8080">
           </label>
         </div>
         <label>Build command
-          <input type="text" name="build_cmd" placeholder="npm ci && npm run build">
+          <input type="text" name="build_cmd" value="{{ .Values.BuildCommand }}" placeholder="npm ci && npm run build">
         </label>
         <label>Run command
-          <input type="text" name="run_cmd" placeholder="npm start">
+          <input type="text" name="run_cmd" value="{{ .Values.RunCommand }}" placeholder="npm start">
         </label>
       </details>
+    </fieldset>
+
+    <fieldset class="wiz-step" data-when-kind="web" data-when-source="git" data-when-build-mode="static">
+      <legend>Static site build</legend>
+      <p class="hint">The platform builds your site in the selected image, then serves the chosen directory with Nginx. You do not need an <code>npx http-server</code> command.</p>
+      <div class="form-grid-2">
+        <label>Builder image
+          <input type="text" name="image" value="{{ .Values.Image }}" placeholder="node:20-bookworm">
+          <span class="hint">Defaults to <code>node:20-bookworm</code> when a build command is set.</span>
+        </label>
+        <label>Listen port
+          <input type="number" name="port" min="1" max="65535" value="{{ .Values.Port }}" placeholder="80">
+        </label>
+      </div>
+      <label>Build command
+        <input type="text" name="build_cmd" placeholder="npm ci && npm run build">
+        <span class="hint">Optional. Leave empty when the repository is already a static site.</span>
+      </label>
+      <label>Path to serve
+        <input type="text" name="serve_path" value="{{ .Values.ServePath }}" placeholder="repository root (optional)">
+        <span class="hint">Relative to the repository root. Leave empty to serve the repository root.</span>
+      </label>
     </fieldset>
 
     <fieldset class="wiz-step">
       <legend>Details</legend>
       <label>Name
-        <input type="text" name="name" placeholder="derived from the repo or auto-generated">
+        <input type="text" name="name" value="{{ .Values.Name }}" placeholder="derived from the repo or auto-generated">
         <span class="hint">Optional. Lowercase letters, digits, and hyphens (1-63 chars).</span>
       </label>
       <div class="form-grid-2">
         <label>Environment variables
-          <textarea name="env" rows="4" placeholder="NODE_ENV=production&#10;PORT=3000" spellcheck="false"></textarea>
+          <textarea name="env" rows="4" placeholder="NODE_ENV=production&#10;PORT=3000" spellcheck="false">{{ .Values.Env }}</textarea>
           <span class="hint">KEY=VALUE per line; applies at build and runtime. Editable later.</span>
         </label>
         <label>Secrets
@@ -154,6 +203,7 @@
       <div class="review-grid" aria-live="polite">
         <div><span class="review-label">App type</span><strong id="review-kind">Web app</strong></div>
         <div><span class="review-label">Source</span><strong id="review-source">Git repository</strong></div>
+        <div><span class="review-label">Build</span><strong id="review-build">Repository configuration</strong></div>
         <div><span class="review-label">Name</span><strong id="review-name">Generated from source</strong></div>
       </div>
       <p class="hint">After deployment, the app will be available under <code>/app/&lt;name&gt;/</code> on the dashboard host.</p>

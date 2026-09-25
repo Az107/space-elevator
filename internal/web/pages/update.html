@@ -1,0 +1,43 @@
+<section class="narrow">
+  <header class="page-head">
+    <div>
+      <h1>Update {{ .App.Name }}</h1>
+      <p class="page-sub">Replace the source release while keeping the app identity and persistent data.</p>
+    </div>
+    <a class="ghost" href="/apps/{{ .App.Name }}">Back to app</a>
+  </header>
+
+  {{ if .Error }}<div class="flash" role="alert">{{ .Error }}</div>{{ end }}
+
+  <form method="post" action="/apps/{{ .App.Name }}/update" enctype="multipart/form-data" class="form wizard" data-confirm="Update {{ .App.Name }}? The app will be briefly interrupted and its persistent data will be backed up." data-confirm-title="Update app" data-busy>
+    <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
+
+    <fieldset class="wiz-step">
+      <legend>Source release</legend>
+      {{ if eq .SourceType "git" }}
+        <label>Git ref
+          <input type="text" name="ref" value="{{ .App.GitRef }}" placeholder="main, v2.4, or commit SHA">
+          <span class="hint">The current repository is reused. Branches, tags, and commit SHAs are supported.</span>
+        </label>
+      {{ else }}
+        <label>Replacement archive
+          <input type="file" name="tarball" accept=".tar.gz,.tgz,.zip" required>
+          <span class="hint">The new archive replaces the source directory after validation. Existing app data is retained.</span>
+        </label>
+        <label>Archive display name <span class="muted">optional</span>
+          <input type="text" name="source_name" placeholder="release-v2.tar.gz">
+        </label>
+      {{ end }}
+    </fieldset>
+
+    <div class="flash flash-info" role="note">
+      <strong>Data safety:</strong> named volumes and managed bind data are backed up after the new release is prepared.
+      The update briefly stops the old containers, activates the new release, and attempts to restore the previous release if startup fails.
+      Keep logical volume names unchanged when updating.
+    </div>
+
+    <div>
+      <button type="submit">{{ template "i-redeploy" }}<span class="btn-label">Review and update</span></button>
+    </div>
+  </form>
+</section>

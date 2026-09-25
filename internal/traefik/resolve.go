@@ -24,6 +24,15 @@ import (
 // rootlessGateway is typically the rootless podman bridge gateway
 // (default "10.89.0.1"); pass "" to fall back to the container IP.
 func ResolveForApp(ctx context.Context, cli *podman.Client, appName string, spec *composer.Spec, domains []string, rootlessGateway string) ([]ServiceRoute, error) {
+	if cli == nil {
+		return nil, fmt.Errorf("Podman client is not configured")
+	}
+	if spec == nil {
+		return nil, fmt.Errorf("compose spec is not configured")
+	}
+	if appName == "" {
+		return nil, fmt.Errorf("app name is required")
+	}
 	ips, err := cli.InspectIPs(ctx, "space-elevator.app="+appName)
 	if err != nil {
 		return nil, err
@@ -34,22 +43,29 @@ func ResolveForApp(ctx context.Context, cli *podman.Client, appName string, spec
 			continue
 		}
 		ip, ok := ips[svcName]
-		if !ok || ip.IP == "" {
+		if !ok {
 			continue
 		}
-		containerPort, err := firstContainerPort(svc.Ports)
+		ports, err := containerPorts(svc.Ports)
 		if err != nil {
 			return nil, fmt.Errorf("service %q: %w", svcName, err)
 		}
-		// Prefer gateway+host-port so rootful Traefik can reach the
-		// rootless container via the host's published port.
+		containerPort, hostPort, ok := reachablePort(ip, ports, rootlessGateway)
+		if !ok {
+			// A stopped/no-network container is not routable. This also
+			// prevents startup reconciliation from retaining a stale route.
+			continue
+		}
 		backendIP := ip.IP
 		backendPort := containerPort
-		if ip.HostPort != "" && rootlessGateway != "" {
-			if n, err := strconv.Atoi(ip.HostPort); err == nil {
+		if hostPort != "" && rootlessGateway != "" {
+			if n, err := strconv.Atoi(hostPort); err == nil {
 				backendIP = rootlessGateway
 				backendPort = n
 			}
+		}
+		if backendIP == "" || backendPort == 0 {
+			continue
 		}
 		out = append(out, ServiceRoute{
 			AppName: appName,
@@ -62,17 +78,55 @@ func ResolveForApp(ctx context.Context, cli *podman.Client, appName string, spec
 	return out, nil
 }
 
-// firstContainerPort returns the first container port from a compose ports list,
-// preserving the numeric port and ignoring host binding.
-func firstContainerPort(ports []string) (int, error) {
+// containerPorts returns every container-side port in declaration order.
+// The host binding is intentionally discarded: it is not necessarily the
+// port Traefik should use for a service with multiple exposed ports.
+func containerPorts(ports []string) ([]int, error) {
+	var out []int
 	for _, p := range ports {
 		parsed, err := nat.ParsePortSpec(p)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		for _, pm := range parsed {
-			return pm.Port.Int(), nil
+			if n := pm.Port.Int(); n > 0 {
+				out = append(out, n)
+			}
 		}
 	}
-	return 0, fmt.Errorf("no ports declared")
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no ports declared")
+	}
+	return out, nil
+}
+
+func hostPortFor(ip podman.ContainerIP, containerPort int) string {
+	if ip.HostPorts != nil {
+		prefix := strconv.Itoa(containerPort) + "/"
+		for key, hostPort := range ip.HostPorts {
+			if key == strconv.Itoa(containerPort) || (len(key) > len(prefix) && key[:len(prefix)] == prefix) {
+				return hostPort
+			}
+		}
+	}
+	return ""
+}
+
+func reachablePort(ip podman.ContainerIP, ports []int, gateway string) (containerPort int, hostPort string, ok bool) {
+	for _, port := range ports {
+		host := hostPortFor(ip, port)
+		if host != "" && gateway != "" {
+			return port, host, true
+		}
+		if ip.IP != "" {
+			return port, "", true
+		}
+	}
+	// Older inspect responses only had the single HostPort field. It is
+	// safe to use it when the service declared one port and the container has
+	// a usable network address.
+	if len(ports) == 1 && ip.HostPort != "" && gateway != "" {
+		return ports[0], ip.HostPort, true
+	}
+	return 0, "", false
 }

@@ -154,7 +154,7 @@ func runSetup(cmd *cobra.Command, _ []string) error {
 	}
 	path := config.ConfigPath()
 	if _, err := os.Stat(path); err == nil && !setupForce {
-		fmt.Fprintf(cmd.ErrOrStderr(), "note: %s already exists; overwriting (use --force to silence this)\n", path)
+		return fmt.Errorf("config file already exists: %s (use --force to overwrite)", path)
 	}
 	if err := out.Save(path); err != nil {
 		return err
@@ -463,9 +463,10 @@ func installServiceUnit(cfg *config.Config, linger bool) error {
 		envFile = service.DefaultEnvFile()
 	}
 	path, err := service.Install(service.Options{
-		BinPath: bin,
-		Addr:    cfg.BindAddr,
-		EnvFile: envFile,
+		BinPath:   bin,
+		Addr:      cfg.BindAddr,
+		EnvFile:   envFile,
+		UseConfig: true,
 	}, true)
 	if err != nil {
 		return err

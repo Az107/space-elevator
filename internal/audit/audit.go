@@ -47,6 +47,7 @@ const (
 	ActionAppCreate   = "app.create"
 	ActionAppUpload   = "app.upload"
 	ActionAppDeploy   = "app.deploy"
+	ActionAppUpdate   = "app.update"
 	ActionAppRedeploy = "app.redeploy"
 	ActionAppRemove   = "app.remove"
 	ActionAppRename   = "app.rename"
@@ -143,8 +144,10 @@ func (l *Logger) Record(ctx context.Context, e Event) {
 		UserAgent:  e.UserAgent,
 		Detail:     e.Detail,
 	}
-	if err := l.store.RecordAudit(ctx, ev); err != nil {
-		l.emit(ev, "store_error: "+err.Error())
+	if l.store != nil {
+		if err := l.store.RecordAudit(ctx, ev); err != nil {
+			l.emit(ev, "store_error: "+err.Error())
+		}
 	}
 	l.emit(ev, "")
 }

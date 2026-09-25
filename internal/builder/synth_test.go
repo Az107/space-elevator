@@ -24,8 +24,8 @@ func TestCustomBuildValidate(t *testing.T) {
 		"no image":     {BuilderImage: "", RunCommand: "x", ListenPort: 80},
 		"no run":       {BuilderImage: "node:20", RunCommand: " ", ListenPort: 80},
 		"image spaces": {BuilderImage: "node:20 && rm -rf /", RunCommand: "x", ListenPort: 80},
-		"port low":     {BuilderImage: "node:20", RunCommand: "x", ListenPort: 0, // handled by Port(), raw 0 invalid for range? see below
-		},
+		"port low":     {BuilderImage: "node:20", RunCommand: "x", ListenPort: 0}, // handled by Port(), raw 0 invalid for range? see below
+
 	}
 	// Port 0 is allowed at validate (resolves to default); test explicit bad ports instead.
 	badPort := validBuild()
@@ -100,6 +100,24 @@ func TestWriteCustomBuild(t *testing.T) {
 	}
 	if err := WriteCustomBuild(dir, CustomBuild{RunCommand: "x"}); err == nil {
 		t.Error("invalid build must not write files")
+	}
+}
+
+func TestWriteCustomBuildRefusesSymlinkOutput(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "Dockerfile")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := WriteCustomBuild(dir, validBuild()); err == nil {
+		t.Fatal("expected symlink output to be rejected")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "keep" {
+		t.Fatalf("outside file changed: %q, %v", got, err)
 	}
 }
 

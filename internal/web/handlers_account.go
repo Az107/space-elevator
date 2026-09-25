@@ -106,7 +106,10 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 		s.renderAccountForm(w, r, "password", err.Error(), "")
 		return
 	}
-	_ = s.Store.DeleteOtherSessionsForUser(r.Context(), u.ID, sessionFromCtx(r.Context()).ID)
+	if err := s.Store.DeleteOtherSessionsForUser(r.Context(), u.ID, sessionFromCtx(r.Context()).ID); err != nil {
+		s.renderSettings(w, r, "password updated, but other sessions could not be invalidated: "+err.Error())
+		return
+	}
 	s.recordAudit(r, audit.ActionPasswordChange, "user", u.ID, u.Username, audit.OutcomeSuccess, "other sessions signed out")
 	s.redirectOK(w, r, "/settings", "Password updated; other sessions were signed out.")
 }

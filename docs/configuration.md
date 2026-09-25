@@ -24,7 +24,17 @@ $XDG_CONFIG_HOME/space-elevator/config.yaml   # if XDG_CONFIG_HOME is set
 Generate a fully-commented file with `space-elevator config init` (add
 `--from-legacy` to seed from an existing install), then edit it freely. Inspect
 what is actually in effect with `space-elevator config show`, and check it with
-`space-elevator config validate`.
+`space-elevator config validate`. `config init` refuses to clobber an existing
+file unless you pass `--force`; writes are atomic (temp file + rename) and a
+symlinked config path is rejected rather than followed.
+
+The systemd unit written by `space-elevator service install` (and by `setup`)
+runs `serve` **without** an `--addr` flag on purpose: the config file and
+`SPACE_ELEVATOR_*` env stay authoritative, so editing `bind_addr` and running
+`space-elevator service restart` is enough to change the listen address.
+`serve` refuses to start on a configuration `error` (e.g. a relative
+`apps_root`, a `public_host` containing a scheme or path, a non-IP
+`rootless_gateway`); `doctor` reports the same list.
 
 ## Exposure modes
 
@@ -45,6 +55,7 @@ what is actually in effect with `space-elevator config show`, and check it with
 | `bind_addr` | `SPACE_ELEVATOR_BIND_ADDR` | `127.0.0.1:8080` | Dashboard listen address. Use `0.0.0.0:8080` when a rootful Traefik container must reach it through the host. |
 | `socket_path` | `PODMAN_SOCKET` | auto-detect | Podman/Docker API socket. Auto-detect checks `$XDG_RUNTIME_DIR/podman/podman.sock`, `/run/podman/podman.sock` and `/tmp/podman/podman.sock`. |
 | `data_dir` | `SPACE_ELEVATOR_DATA_DIR` | `~/.local/share/space-elevator` | Long-lived data (uploads, checkouts). |
+| `backup_dir` | `SPACE_ELEVATOR_BACKUP_DIR` | `<data_dir>/backups` | App update backups. Keep enough free space for database volumes. Created `0700`. |
 | `state_dir` | `SPACE_ELEVATOR_STATE_DIR` | `~/.local/state/space-elevator` | SQLite DB and CSRF key. Created `0700`. |
 | `apps_root` | `SPACE_ELEVATOR_APPS_ROOT` | `~/apps` | Where app drops and git checkouts live. |
 | `quadlet_dir` | `SPACE_ELEVATOR_QUADLET_DIR` | `~/.config/containers/systemd` | Reserved for quadlet support. |

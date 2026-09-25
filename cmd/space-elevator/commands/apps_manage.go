@@ -21,7 +21,7 @@ var _ = fmt.Sprintf
 
 var appsRemoveCmd = &cobra.Command{
 	Use:   "remove <app>",
-	Short: "Remove an app (stop + delete containers + remove network)",
+	Short: "Remove an app (containers, network, and source; persistent data is retained)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAppsRemove,
 }
@@ -38,6 +38,9 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 
 	app, err := st.GetAppByName(ctx, args[0])
 	if err != nil {
+		return err
+	}
+	if err := refuseIfBusy(ctx, st, app.ID); err != nil {
 		return err
 	}
 
@@ -60,21 +63,34 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 	meta := composer.AppMeta{ID: app.ID, Name: app.Slug, Label: app.Slug}
 	fmt.Printf("Removing %s...\n", app.Name)
 	if err := rt.Remove(ctx, meta, spec); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove runtime: %v\n", err)
+		return fmt.Errorf("remove runtime: %w", err)
 	}
 	if err := traefik.NewWriter(cfg.TraefikDir, cfg.CertResolver).Remove(app.Slug); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik remove: %v\n", err)
+		return fmt.Errorf("remove route: %w", err)
 	}
 	// Drop the local image so it can't be reused as a back-door after
 	// the app is gone. Ignore errors — the image may already be gone.
+	images := map[string]bool{}
 	for svcName := range spec.Services {
-		tag := rt.ImageTag(app.Slug, svcName)
+		images[rt.ImageTag(app.Slug, svcName)] = true
+	}
+	if releases, releaseErr := st.ListReleases(ctx, app.ID); releaseErr == nil {
+		for _, release := range releases {
+			for _, image := range release.ImageMap {
+				images[image] = true
+			}
+		}
+	}
+	for tag := range images {
+		if tag == "" {
+			continue
+		}
 		if err := cli.RemoveImage(ctx, tag, false); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warn: image remove %s: %v\n", tag, err)
 		}
 	}
 	if err := store.DeleteAppArtifacts(cfg.AppsRoot, app); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove artifacts: %v\n", err)
+		return fmt.Errorf("remove artifacts: %w", err)
 	}
 	if err := st.DeleteApp(ctx, app.ID); err != nil {
 		return err
@@ -88,6 +104,21 @@ func runAppsRemove(cmd *cobra.Command, args []string) error {
 		Detail:     "source " + app.SourceType,
 	})
 	fmt.Printf("OK: %s removed.\n", app.Name)
+	return nil
+}
+
+// refuseIfBusy returns an error when the app has an operation in flight.
+// It uses Store.HasActiveOperation, which reports "idle" as (false, nil) —
+// calling Store.ActiveOperation directly and treating any error as a
+// failure is wrong, because an idle app returns store.ErrNotFound.
+func refuseIfBusy(ctx context.Context, st *store.Store, appID string) error {
+	busy, err := st.HasActiveOperation(ctx, appID)
+	if err != nil {
+		return err
+	}
+	if busy {
+		return fmt.Errorf("another deploy or update is in progress for this app; wait for it to finish")
+	}
 	return nil
 }
 
@@ -141,6 +172,9 @@ func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseIfBusy(ctx, st, app.ID); err != nil {
+		return err
+	}
 	cli, err := podman.New(cfg.SocketPath)
 	if err != nil {
 		return err
@@ -163,7 +197,7 @@ func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
 		}
 		_ = st.UpdateAppStatus(ctx, app.ID, "running")
 		if err := dep.SyncRoute(ctx, app); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+			return fmt.Errorf("publish route: %w", err)
 		}
 		au.Record(ctx, audit.Event{Action: audit.ActionAppStart, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 		fmt.Printf("OK: %s started.\n", app.Name)
@@ -174,7 +208,7 @@ func runAppsStartStop(cmd *cobra.Command, name string, start bool) error {
 	}
 	_ = st.UpdateAppStatus(ctx, app.ID, "stopped")
 	if err := dep.SyncRoute(ctx, app); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+		return fmt.Errorf("publish route: %w", err)
 	}
 	au.Record(ctx, audit.Event{Action: audit.ActionAppStop, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 	fmt.Printf("OK: %s stopped.\n", app.Name)
@@ -206,6 +240,9 @@ func runAppsRename(cmd *cobra.Command, args []string) error {
 
 	app, err := st.GetAppByName(ctx, oldName)
 	if err != nil {
+		return err
+	}
+	if err := refuseIfBusy(ctx, st, app.ID); err != nil {
 		return err
 	}
 	if newName == app.Name {
@@ -243,6 +280,9 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseIfBusy(ctx, st, app.ID); err != nil {
+		return err
+	}
 	if _, err := composer.Parse([]byte(app.ComposeYAML)); err != nil {
 		return err
 	}
@@ -253,16 +293,19 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(cs) == 0 {
+		return fmt.Errorf("app %s has no containers to restart", app.Name)
+	}
 	for _, c := range cs {
-		full, err := cli.LookupID(context.Background(), c.ID)
+		full, err := cli.LookupID(ctx, c.ID)
 		if err != nil || full == "" {
-			continue
+			return fmt.Errorf("resolve container %s: %w", c.ID, err)
 		}
-		if err := cli.StopContainer(ctx, full, 10); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warn: stop %s: %v\n", c.ID, err)
+		if err := cli.StopContainer(ctx, full, 10); err != nil && c.State == "running" {
+			return fmt.Errorf("stop %s: %w", c.Name, err)
 		}
 		if err := cli.StartContainer(ctx, full); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warn: start %s: %v\n", c.ID, err)
+			return fmt.Errorf("start %s: %w", c.Name, err)
 		}
 		fmt.Printf("restarted %s\n", c.Name)
 	}
@@ -277,7 +320,7 @@ func runAppsRestart(cmd *cobra.Command, args []string) error {
 		CertResolver:    cfg.CertResolver,
 	})
 	if err := dep.SyncRoute(ctx, app); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warn: traefik route: %v\n", err)
+		return fmt.Errorf("publish route: %w", err)
 	}
 	au.Record(ctx, audit.Event{Action: audit.ActionAppRestart, TargetType: "app", TargetID: app.ID, TargetName: app.Name, Outcome: audit.OutcomeSuccess})
 	return nil

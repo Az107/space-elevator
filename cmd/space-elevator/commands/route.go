@@ -59,7 +59,7 @@ func runRouteRegen(cmd *cobra.Command, args []string) error {
 	wrote, err := traefik.ApplyAppRoute(cmd.Context(), traefik.AppOptions{
 		Writer:          w,
 		Client:          cli,
-		AppName:         app.Name,
+		AppName:         app.Slug,
 		Spec:            spec,
 		Domains:         domains,
 		PublicHost:      cfg.PublicHost,
@@ -73,6 +73,6 @@ func runRouteRegen(cmd *cobra.Command, args []string) error {
 		fmt.Printf("OK: %s has no domains; Traefik file removed.\n", app.Name)
 		return nil
 	}
-	fmt.Printf("OK: rewrote %s/%s.yml\n", cfg.TraefikDir, app.Name)
+	fmt.Printf("OK: rewrote %s/%s.yml\n", cfg.TraefikDir, app.Slug)
 	return nil
 }

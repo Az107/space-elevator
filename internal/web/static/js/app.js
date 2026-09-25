@@ -3,8 +3,8 @@
 // CSRF token for fetch() POSTs (HTML forms carry the hidden input).
 const csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
-// PWA: register the service worker (installable dashboard + offline
-// shell). Secure contexts only; failures are non-fatal.
+// PWA: register the service worker (installable dashboard + versioned
+// static-asset cache). Secure contexts only; failures are non-fatal.
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -271,8 +271,8 @@ document.addEventListener('submit', e => {
         status.classList.add('error');
         return;
       }
-      status.textContent = '✓ Deployed as ' + json.name + '. Opening it…';
-      setTimeout(() => location.href = '/apps/' + json.name, 800);
+      status.textContent = '✓ Deployment queued. Opening progress…';
+      setTimeout(() => location.href = (json.status_url || ('/apps/' + json.name)), 500);
     } catch (e) {
       status.textContent = '✕ ' + e.message;
       status.classList.add('error');
@@ -301,18 +301,31 @@ document.addEventListener('submit', e => {
     const sourceLabels = { git: 'Git repository', upload: 'Upload archive' };
     const kind = checked('kind');
     const source = checked('source');
+    const buildMode = checked('build_mode');
     const name = form.querySelector('input[name="name"]');
     const kindEl = form.querySelector('#review-kind');
     const sourceEl = form.querySelector('#review-source');
+    const buildEl = form.querySelector('#review-build');
     const nameEl = form.querySelector('#review-name');
     if (kindEl) kindEl.textContent = kindLabels[kind] || 'Web app';
     if (sourceEl) sourceEl.textContent = sourceLabels[source] || 'Git repository';
+    if (buildEl) {
+      if (kind === 'web' && buildMode === 'static') {
+        const path = form.querySelector('input[name="serve_path"]');
+        buildEl.textContent = 'Static · ' + ((path && path.value.trim()) || 'repository root');
+      } else if (kind === 'web' && buildMode === 'server') {
+        buildEl.textContent = 'Custom server image';
+      } else {
+        buildEl.textContent = 'Repository configuration';
+      }
+    }
     if (nameEl) nameEl.textContent = name && name.value.trim() ? name.value.trim() : 'Generated from source';
   }
   function sync() {
     const kind = checked('kind');
     const source = checked('source');
-    form.querySelectorAll('[data-when-kind], [data-when-source]').forEach(el => {
+    const buildMode = checked('build_mode');
+    form.querySelectorAll('[data-when-kind], [data-when-source], [data-when-build-mode], [data-hide-when-build-mode]').forEach(el => {
       let ok = true;
       if (el.dataset.whenKind) {
         ok = ok && el.dataset.whenKind.split(' ').indexOf(kind) !== -1;
@@ -320,11 +333,17 @@ document.addEventListener('submit', e => {
       if (el.dataset.whenSource) {
         ok = ok && el.dataset.whenSource.split(' ').indexOf(source) !== -1;
       }
+      if (el.dataset.whenBuildMode) {
+        ok = ok && el.dataset.whenBuildMode.split(' ').indexOf(buildMode) !== -1;
+      }
+      if (el.dataset.hideWhenBuildMode) {
+        ok = ok && el.dataset.hideWhenBuildMode.split(' ').indexOf(buildMode) === -1;
+      }
       setEnabled(el, ok);
     });
     updateReview();
   }
-  form.querySelectorAll('input[name="kind"], input[name="source"]').forEach(el => el.addEventListener('change', sync));
+  form.querySelectorAll('input[name="kind"], input[name="source"], input[name="build_mode"]').forEach(el => el.addEventListener('change', sync));
   form.addEventListener('input', updateReview);
   sync();
 
@@ -391,9 +410,12 @@ document.addEventListener('submit', e => {
   const steps = document.getElementById('deploy-steps');
   const lamp = document.querySelector('.app-title .lamp');
   const stageLabels = {
+    preflight: 'Checking update…',
     clone: 'Cloning repo…',
     compose: 'Resolving compose…',
-    deploy: 'Building & starting…',
+    build: 'Building release…',
+    backup: 'Backing up data…',
+    deploy: 'Starting release…',
     route: 'Publishing route…'
   };
   let es = null;
@@ -463,7 +485,7 @@ document.addEventListener('submit', e => {
         if (line.text) { pre.textContent += line.text + '\n'; autoscroll(); }
       });
       seq = data.seq || seq;
-      if (data.status && data.status !== 'pending') { finishDeploy(data); return; }
+      if (data.status && data.status !== 'pending' && data.status !== 'updating') { finishDeploy(data); return; }
       timer = setTimeout(pollDeploy, 1500);
     }).catch(() => {
       // Transient network/proxy hiccup — back off and retry.

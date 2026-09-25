@@ -1,0 +1,72 @@
+<section class="narrow">
+  <header class="page-head">
+    <div>
+      <a class="back-link" href="/apps/{{ .App.Name }}">← Back to app</a>
+      <h1>Build settings</h1>
+      <p class="page-sub">Change how {{ .App.Name }} is built, then retry the failed deployment.</p>
+    </div>
+  </header>
+
+  {{ if .Error }}<div class="flash" role="alert">{{ .Error }}</div>{{ end }}
+
+  <form method="post" action="/apps/{{ .App.Name }}/build-settings" class="form wizard" data-confirm="Save these build settings and retry {{ .App.Name }}?" data-confirm-title="Retry deployment">
+    <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+
+    <fieldset class="wiz-step">
+      <legend>Build mode</legend>
+      <div class="choice-grid">
+        <label class="choice">
+          <input type="radio" name="build_mode" value="server"{{ if ne .App.BuildMode "static" }} checked{{ end }}>
+          <span class="choice-body">
+            <span class="choice-title">Run a server</span>
+            <span class="choice-desc">Use a custom image with build and serve commands.</span>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="build_mode" value="static"{{ if eq .App.BuildMode "static" }} checked{{ end }}>
+          <span class="choice-body">
+            <span class="choice-title">Serve a static site</span>
+            <span class="choice-desc">Build with a tool image and serve a path with Nginx.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="wiz-step">
+      <legend>Common settings</legend>
+      <div class="form-grid-2">
+        <label>Builder image
+          <input type="text" name="image" value="{{ .App.BuilderImage }}" placeholder="node:20-bookworm">
+        </label>
+        <label>Listen port
+          <input type="number" name="port" min="1" max="65535" value="{{ .App.ListenPort }}" placeholder="8080">
+        </label>
+      </div>
+      <label>Build command
+        <input type="text" name="build_cmd" value="{{ .App.BuildCommand }}" placeholder="npm ci && npm run build">
+      </label>
+    </fieldset>
+
+    <fieldset class="wiz-step">
+      <legend>Server settings</legend>
+      <label>Serve command
+        <input type="text" name="run_cmd" value="{{ .App.RunCommand }}" placeholder="npm start">
+        <span class="hint">Used only when running an application server.</span>
+      </label>
+    </fieldset>
+
+    <fieldset class="wiz-step">
+      <legend>Static site settings</legend>
+      <label>Path to serve
+        <input type="text" name="serve_path" value="{{ .App.ServePath }}" placeholder="repository root (optional)">
+        <span class="hint">Relative to the repository root. Leave empty to serve the repository root.</span>
+      </label>
+      <p class="hint">Static builds use a generated multi-stage image with Nginx. No <code>npx http-server</code> command is needed.</p>
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit">{{ template "i-redeploy" }}<span class="btn-label">Save settings and retry</span></button>
+      <a class="btn ghost" href="/apps/{{ .App.Name }}">Cancel</a>
+    </div>
+  </form>
+</section>

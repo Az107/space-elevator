@@ -121,9 +121,13 @@ func TestLoadRuntimeEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env, err := s.LoadRuntimeEnv(ctx, "a1", map[string]string{"A": "plain", "SHARED": "plain"})
+	base := map[string]string{"A": "plain", "SHARED": "plain"}
+	env, err := s.LoadRuntimeEnv(ctx, "a1", base)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if base["SHARED"] != "plain" || base["TOKEN"] != "" {
+		t.Errorf("LoadRuntimeEnv mutated base: %#v", base)
 	}
 	if env["A"] != "plain" {
 		t.Errorf("A = %q, want plain", env["A"])

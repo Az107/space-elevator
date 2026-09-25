@@ -121,7 +121,7 @@ func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.
 		Name:           name,
 		Slug:           name,
 		SourceType:     "drop",
-		SourceRef:      req.SourceRef,
+		SourceRef:      safeSourceRef(req.SourceRef, filepath.Base(req.ArchivePath)),
 		DropKind:       dropKind,
 		ComposeYAML:    string(composeBytes),
 		Env:            env,
@@ -142,6 +142,8 @@ func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.
 	}
 	for k, v := range req.Secrets {
 		if err := d.Store.SetSecret(ctx, id, k, v); err != nil {
+			_ = d.Store.DeleteApp(ctx, id)
+			cleanup()
 			return nil, fmt.Errorf("store secret %q: %w", k, err)
 		}
 	}

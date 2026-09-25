@@ -72,6 +72,11 @@ func TestRenderAllPages(t *testing.T) {
 	render("deploy", rr, "deploy.html", deployFormData{PageData: PageData{Authed: true, Title: "Deploy"}})
 
 	rr = httptest.NewRecorder()
+	render("update_git", rr, "update.html", appUpdateData{PageData: PageData{Authed: true, Title: "Update"}, App: apps[0], SourceType: "git"})
+	rr = httptest.NewRecorder()
+	render("update_drop", rr, "update.html", appUpdateData{PageData: PageData{Authed: true, Title: "Update"}, App: apps[1], SourceType: "drop"})
+
+	rr = httptest.NewRecorder()
 	render("settings", rr, "settings.html", settingsData{
 		PageData:               PageData{Authed: true, Title: "Settings"},
 		SocketPath:             "/run/user/1000/podman/podman.sock",

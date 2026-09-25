@@ -41,6 +41,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		"experimental":    ping.Experimental,
 		"builder_version": ping.BuilderVersion,
 		"data_dir":        cfg.DataDir,
+		"backup_dir":      cfg.BackupDir,
 		"state_dir":       cfg.StateDir,
 		"traefik_dir":     cfg.TraefikDir,
 		"quadlet_dir":     cfg.QuadletDir,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/docker/docker/pkg/stdcopy"
@@ -111,9 +112,12 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, targets []st
 	// writer must be serialized or frames interleave mid-line.
 	out := &lockedWriter{w: w, f: flusher}
 
+	var wg sync.WaitGroup
 	for _, id := range targets {
 		id := id
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			rc, err := s.Cli.ContainerLogs(ctx, id, true, tail)
 			if err != nil {
 				out.printf("data: [%s] error: %v\n\n", id, err)
@@ -125,6 +129,7 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request, targets []st
 	}
 
 	<-r.Context().Done()
+	wg.Wait()
 }
 
 // lockedWriter serializes SSE writes from the per-container goroutines.
@@ -165,8 +170,13 @@ func (s *Server) demuxSSE(w io.Writer, src io.Reader) {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		// Escape SSE-forbidden newlines.
-		line = bytes.ReplaceAll(line, []byte{'\n'}, nil)
+		// Scanner removes LF, but Docker output can retain CR. Remove both
+		// line terminators and NULs before placing data in an SSE frame.
+		line = bytes.TrimRight(line, "\r")
+		line = bytes.ReplaceAll(line, []byte{0}, nil)
 		fmt.Fprintf(w, "data: %s\n\n", line)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(w, "data: [log stream error: %s]\n\n", strings.ReplaceAll(err.Error(), "\n", " "))
 	}
 }

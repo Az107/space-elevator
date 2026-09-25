@@ -4,7 +4,7 @@ Wants=network-online.target podman.socket
 After=network-online.target podman.socket
 
 [Service]
-ExecStart={{.BinPath}} serve --addr {{.Addr}}
+ExecStart={{.BinPath}} serve{{if not .UseConfig}} --addr {{.Addr}}{{end}}
 # "always" (not on-failure): a dashboard must come back up even after a
 # clean SIGTERM — a stray kill would otherwise leave it dead for good.
 Restart=always

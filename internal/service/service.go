@@ -28,6 +28,9 @@ type Options struct {
 	// EnvFile, when set, is loaded by systemd via EnvironmentFile. A leading
 	// "-" is added by the template so a missing file is not fatal.
 	EnvFile string
+	// UseConfig makes the unit invoke `serve` without an --addr override.
+	// This keeps the YAML/env configuration authoritative after setup.
+	UseConfig bool
 }
 
 // Render returns the unit file contents.
@@ -35,7 +38,10 @@ func Render(o Options) (string, error) {
 	if o.BinPath == "" {
 		return "", fmt.Errorf("binary path is required")
 	}
-	if o.Addr == "" {
+	if !filepath.IsAbs(o.BinPath) || strings.ContainsAny(o.BinPath, "\x00\r\n\t ") {
+		return "", fmt.Errorf("binary path must be an absolute path without whitespace")
+	}
+	if o.Addr == "" && !o.UseConfig {
 		o.Addr = "127.0.0.1:8080"
 	}
 	var b bytes.Buffer
@@ -126,7 +132,36 @@ func Install(o Options, enable bool) (string, error) {
 		return "", err
 	}
 	path := UnitPath()
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("refusing to overwrite symlinked unit %q", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".space-elevator-unit-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		cleanup()
+		return "", err
+	}
+	if _, err := tmp.WriteString(body); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return "", err
 	}
 	if out, err := systemctl("--user", "daemon-reload"); err != nil {

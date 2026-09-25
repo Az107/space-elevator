@@ -91,7 +91,7 @@
               </form>
               <span class="sep" aria-hidden="true"></span>
               <form action="/apps/{{ $app.Name }}/remove" method="post"
-                    data-confirm="Remove {{ $app.Name }}? This cannot be undone."
+                    data-confirm="Remove {{ $app.Name }}? Containers and source are deleted, but persistent data is retained for recovery."
                     data-confirm-title="Remove app" data-confirm-variant="danger" data-busy>
                 <input type="hidden" name="csrf" value="{{ $.CSRFToken }}">
                 <button class="btn subtle visible danger sm">{{ template "i-trash" }}<span class="btn-label">Remove</span></button>

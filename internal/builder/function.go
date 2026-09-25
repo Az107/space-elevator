@@ -203,7 +203,7 @@ func WriteFunctionBuild(destDir string, f FunctionBuild) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(adapterDir, adapterName), adapterSrc, 0o644); err != nil {
+	if err := writeGeneratedFile(adapterDir, adapterName, adapterSrc, 0o644); err != nil {
 		return fmt.Errorf("write adapter: %w", err)
 	}
 	files := map[string]string{
@@ -212,7 +212,7 @@ func WriteFunctionBuild(destDir string, f FunctionBuild) error {
 		".dockerignore": ".git\n",
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(destDir, name), []byte(body), 0o644); err != nil {
+		if err := writeGeneratedFile(destDir, name, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
 	}

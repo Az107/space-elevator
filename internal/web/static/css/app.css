@@ -1116,7 +1116,7 @@ ul.domains li.muted { border-bottom: 0; justify-content: flex-start; }
 .review-dialog .muted, .review-dialog .hint { margin: 0; }
 .review-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 12px;
 }
 .review-grid > div {
@@ -1158,6 +1158,98 @@ ul.domains li.muted { border-bottom: 0; justify-content: flex-start; }
 .choice-title { font-size: 13.5px; font-weight: 500; color: var(--ink); }
 .choice-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
 .choice-desc code { font-size: 11px; }
+
+/* ---------- deployment page ---------- */
+
+.deployment-page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+}
+.deployment-head { margin-bottom: 22px; }
+.deployment-head h1 { margin-top: 8px; }
+.back-link { color: var(--muted); font-size: 13px; }
+.back-link:hover { color: var(--amber); }
+.deployment-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deployment-status {
+  padding: 18px 20px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.deployment-status.status-completed { border-left-color: var(--ok); }
+.deployment-status.status-failed,
+.deployment-status.status-rollback_failed { border-left-color: var(--bad); }
+.deployment-status.status-rolled_back { border-left-color: var(--warn); }
+.deployment-status-main { display: flex; align-items: flex-start; gap: 12px; }
+.deployment-status-icon {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--info);
+  font: 500 15px/1 var(--mono);
+}
+.status-completed .deployment-status-icon { color: var(--ok); border-color: rgba(65, 209, 137, .5); }
+.status-failed .deployment-status-icon,
+.status-rollback_failed .deployment-status-icon { color: var(--bad); border-color: rgba(239, 110, 107, .5); }
+.status-rolled_back .deployment-status-icon { color: var(--warn); border-color: rgba(233, 180, 76, .5); }
+.deployment-status strong { display: block; font-size: 15px; }
+.deployment-status p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+.deployment-progress { height: 3px; margin-top: 17px; overflow: hidden; background: var(--line-soft); border-radius: 3px; }
+.deployment-progress span { display: block; height: 100%; background: var(--amber); transition: width .2s ease-out; }
+.status-completed .deployment-progress span { background: var(--ok); }
+.status-failed .deployment-progress span,
+.status-rollback_failed .deployment-progress span { background: var(--bad); }
+.status-rolled_back .deployment-progress span { background: var(--warn); }
+.deployment-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.deployment-plan-panel, .deployment-log-panel { min-width: 0; }
+.deployment-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.deployment-step { position: relative; display: grid; grid-template-columns: 25px minmax(0, 1fr) auto; gap: 9px; align-items: center; min-height: 49px; padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
+.deployment-step:last-child { border-bottom: 0; }
+.step-marker { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 50%; color: var(--faint); font: 500 12px/1 var(--mono); }
+.step-succeeded .step-marker { color: var(--ok); border-color: rgba(65, 209, 137, .5); }
+.step-running .step-marker { color: var(--amber); border-color: rgba(255, 178, 36, .55); }
+.step-failed .step-marker { color: var(--bad); border-color: rgba(239, 110, 107, .55); }
+.step-rolled_back .step-marker { color: var(--warn); border-color: rgba(233, 180, 76, .55); }
+.step-copy { min-width: 0; display: grid; gap: 2px; }
+.step-copy strong { font-size: 13px; font-weight: 500; }
+.step-state { color: var(--faint); font: 500 11px/1.2 var(--mono); white-space: nowrap; }
+.step-succeeded .step-state { color: var(--ok); }
+.step-running .step-state { color: var(--amber); }
+.step-failed .step-state { color: var(--bad); }
+.step-error { color: var(--bad); font-size: 12px; overflow-wrap: anywhere; }
+.deployment-log-panel pre#deployment-log { margin: 0; height: 370px; overflow: auto; padding: 14px 16px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--well); color: #B9C4D8; font: 400 12.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.deployment-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--faint); font-size: 12px; }
+.deployment-footer a:hover { color: var(--amber); }
+.deployment-footer .mono { overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .deployment-page { padding: 22px 18px 96px; }
+  .deployment-head-actions { width: 100%; }
+  .deployment-grid { grid-template-columns: 1fr; }
+  .deployment-log-panel pre#deployment-log { height: 300px; }
+}
+
+
+
+.deployment-history { margin-bottom: 16px; }
+.deployment-history-list { display: grid; }
+.deployment-history-row { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line-soft); font-size: 12.5px; }
+.deployment-history-row:hover { color: var(--amber); }
+.history-op { color: var(--muted); }
+.history-status { font: 500 11px/1 var(--mono); }
+.status-text-completed { color: var(--ok); }
+.status-text-failed, .status-text-rollback_failed { color: var(--bad); }
+.status-text-rolled_back { color: var(--warn); }
+.status-text-preflighting, .status-text-building, .status-text-backing_up, .status-text-cutting_over, .status-text-verifying, .status-text-rolling_back { color: var(--info); }
+.history-step, .deployment-history-row time { color: var(--faint); font: 400 11.5px/1 var(--mono); }
+.deployment-history-row time { white-space: nowrap; }
 
 /* ---------- kind badge ---------- */
 
@@ -1301,6 +1393,9 @@ main.auth {
   .form-grid-2 { grid-template-columns: 1fr; }
   .secret-form { grid-template-columns: 1fr; }
   .review-grid { grid-template-columns: 1fr; }
+  .deployment-history-row { grid-template-columns: 1fr auto; gap: 5px 10px; }
+  .history-step { grid-column: 1; }
+  .deployment-history-row time { grid-column: 2; grid-row: 2; }
   dl.kv { grid-template-columns: 110px minmax(0, 1fr); }
 
   .actions .sep { display: none; }

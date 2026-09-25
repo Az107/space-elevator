@@ -32,6 +32,9 @@ func (c *Client) BuildImage(ctx context.Context, opts BuildOptions) error {
 	if opts.Dockerfile == "" {
 		opts.Dockerfile = "Dockerfile"
 	}
+	if err := validateDockerfile(opts.ContextDir, opts.Dockerfile); err != nil {
+		return err
+	}
 	tarCtx, err := tarContext(opts.ContextDir)
 	if err != nil {
 		return err
@@ -68,7 +71,12 @@ func readBuildOutput(r io.Reader, log func(string)) error {
 			} `json:"errorDetail"`
 		}
 		if err := dec.Decode(&msg); err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			// A clean end-of-stream means the build finished. A cancelled or
+			// truncated stream does NOT: treating context.Canceled as success
+			// would let the caller continue to Activate with whatever image
+			// already carried the tag, i.e. deploy stale code and call it
+			// green. Propagate the cancellation instead.
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return fmt.Errorf("image build: reading output: %w", err)
@@ -89,25 +97,73 @@ func readBuildOutput(r io.Reader, log func(string)) error {
 	}
 }
 
+func validateDockerfile(contextDir, dockerfile string) error {
+	if filepath.IsAbs(dockerfile) {
+		return fmt.Errorf("dockerfile %q must be relative to the build context", dockerfile)
+	}
+	clean := filepath.Clean(filepath.FromSlash(dockerfile))
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("dockerfile %q escapes the build context", dockerfile)
+	}
+	root, err := filepath.EvalSymlinks(contextDir)
+	if err != nil {
+		return fmt.Errorf("resolve build context: %w", err)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("stat build context: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("build context %q is not a directory", contextDir)
+	}
+	path := filepath.Join(root, clean)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("dockerfile %q: %w", dockerfile, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("dockerfile %q is not a regular file", dockerfile)
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("dockerfile %q: %w", dockerfile, err)
+	}
+	rel, err := filepath.Rel(root, realPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("dockerfile %q escapes the build context", dockerfile)
+	}
+	return nil
+}
+
 func tarContext(dir string) (io.ReadCloser, error) {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve build context: %w", err)
+	}
 	pr, pw := io.Pipe()
 	tw := tar.NewWriter(pw)
 	go func() {
 		defer pw.Close()
 		defer tw.Close()
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
 			// VCS metadata and device/socket nodes have no business in a
 			// build context (and opening the latter can block forever).
-			if info.IsDir() && info.Name() == ".git" {
-				return filepath.SkipDir
+			if info.Name() == ".git" {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil
 			}
 			if !info.IsDir() && !info.Mode().IsRegular() {
 				return nil
 			}
-			rel, _ := filepath.Rel(dir, path)
+			rel, _ := filepath.Rel(root, path)
 			if rel == "." {
 				rel = "."
 			}
@@ -138,9 +194,12 @@ func tarContext(dir string) (io.ReadCloser, error) {
 			if err != nil {
 				return err
 			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
+			_, copyErr := io.Copy(tw, f)
+			closeErr := f.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			return closeErr
 		})
 		if err != nil {
 			pw.CloseWithError(err)

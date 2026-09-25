@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -97,10 +98,10 @@ func (s *Server) handleSettingsCreds(w http.ResponseWriter, r *http.Request) {
 		s.renderSettings(w, r, err.Error())
 		return
 	}
-	host := r.FormValue("host")
-	username := r.FormValue("username")
+	host := strings.ToLower(strings.TrimSpace(r.FormValue("host")))
+	username := strings.TrimSpace(r.FormValue("username"))
 	token := r.FormValue("token")
-	if host == "" || token == "" {
+	if host == "" || token == "" || strings.ContainsAny(host, "/@:\r\n\t ") || strings.ContainsRune(token, 0) {
 		s.renderSettings(w, r, "Host and token are required.")
 		return
 	}

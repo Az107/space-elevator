@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -60,6 +61,12 @@ func ParseKVArgs(args []string) (map[string]string, []string) {
 
 // SetSecret upserts one secret value for an app.
 func (s *Store) SetSecret(ctx context.Context, appID, key, value string) error {
+	if !ValidEnvKey(key) {
+		return fmt.Errorf("invalid secret key %q", key)
+	}
+	if strings.ContainsRune(value, 0) {
+		return fmt.Errorf("secret %q contains NUL", key)
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO app_secrets (app_id, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(app_id, key) DO UPDATE SET value=excluded.value`,
@@ -114,29 +121,39 @@ func (s *Store) GetSecrets(ctx context.Context, appID string) (map[string]string
 }
 
 // LoadRuntimeEnv merges an app's plain env with its secret values for
-// injection into containers. Secrets override plain env. This is the
-// single path through which secret values are ever readable.
+// injection into containers. Secrets override plain env. The input map is
+// never mutated: callers also use it as the build-time environment, and
+// secrets must not leak into build inputs or persisted plain env state.
 func (s *Store) LoadRuntimeEnv(ctx context.Context, appID string, base map[string]string) (map[string]string, error) {
-	if base == nil {
-		base = map[string]string{}
+	merged := make(map[string]string, len(base))
+	for k, v := range base {
+		merged[k] = v
 	}
 	secrets, err := s.GetSecrets(ctx, appID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return base, nil
+			return merged, nil
 		}
 		return nil, err
 	}
 	for k, v := range secrets {
-		base[k] = v
+		merged[k] = v
 	}
-	return base, nil
+	return merged, nil
 }
 
 // UpdateAppEnv replaces the app's plain env map (env_json column).
 func (s *Store) UpdateAppEnv(ctx context.Context, appID string, env map[string]string) error {
 	if env == nil {
 		env = map[string]string{}
+	}
+	for key, value := range env {
+		if !ValidEnvKey(key) {
+			return fmt.Errorf("invalid environment key %q", key)
+		}
+		if strings.ContainsRune(value, 0) {
+			return fmt.Errorf("environment value %q contains NUL", key)
+		}
 	}
 	b, _ := json.Marshal(env)
 	_, err := s.db.ExecContext(ctx, `

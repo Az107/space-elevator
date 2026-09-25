@@ -2,7 +2,10 @@ package traefik
 
 import (
 	"fmt"
+	"net"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -78,6 +81,14 @@ type AppRouteConfig struct {
 	CertResolver  string
 }
 
+var routeDomainPattern = regexp.MustCompile(`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`)
+
+// ValidDomain reports whether a custom domain is safe to embed in a
+// Traefik Host rule.
+func ValidDomain(domain string) bool {
+	return len(domain) <= 253 && routeDomainPattern.MatchString(domain)
+}
+
 // Render produces the YAML body for a per-app dynamic file. For each backend
 // it emits:
 //
@@ -92,6 +103,9 @@ type AppRouteConfig struct {
 // The HTTP routers redirect to HTTPS via a per-app <svc>-https middleware,
 // matching the format used by the host's existing rootful routes.
 func Render(cfg AppRouteConfig) ([]byte, error) {
+	if err := validateRouteInputs(cfg); err != nil {
+		return nil, err
+	}
 	dc := DynamicConfig{}
 	dc.HTTP.Routers = map[string]Router{}
 	dc.HTTP.Middlewares = map[string]Middleware{}
@@ -101,12 +115,18 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 	hasPath := false
 	prefix := normalizePrefix(cfg.AppPathPrefix)
 	pathKeys := pathKeysFor(cfg.Routes)
+	seenServices := map[string]bool{}
+	seenPaths := map[string]bool{}
 
 	for _, r := range cfg.Routes {
 		if r.IP == "" || r.Port == 0 {
 			continue
 		}
 		svcKey := serviceKey(r.AppName, r.Name)
+		if seenServices[svcKey] {
+			return nil, fmt.Errorf("route service key collision for %q", svcKey)
+		}
+		seenServices[svcKey] = true
 		secure := cfg.CertResolver != ""
 		httpsMw := svcKey + "-https"
 		stripMw := svcKey + "-strip"
@@ -118,7 +138,11 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 		}
 		dc.HTTP.Services[svcKey] = Service{
 			LoadBalancer: LoadBalancer{
-				Servers: []Server{{URL: fmt.Sprintf("http://%s:%d", r.IP, r.Port)}},
+				// net.JoinHostPort brackets IPv6 literals; plain
+				// fmt.Sprintf("%s:%d") yields "http://fd00::2:8080",
+				// which is not a parseable URL and makes Traefik drop the
+				// whole file.
+				Servers: []Server{{URL: "http://" + net.JoinHostPort(r.IP, strconv.Itoa(r.Port))}},
 			},
 		}
 
@@ -150,6 +174,10 @@ func Render(cfg AppRouteConfig) ([]byte, error) {
 		if cfg.PublicHost != "" && prefix != "" {
 			hasPath = true
 			pathKey := pathKeys[routeID(r)]
+			if seenPaths[pathKey] {
+				return nil, fmt.Errorf("route path key collision for %q", pathKey)
+			}
+			seenPaths[pathKey] = true
 			appPrefix := prefix + pathKey + "/"
 			rule := fmt.Sprintf("Host(`%s`) && PathPrefix(`%s`)", cfg.PublicHost, appPrefix)
 			dc.HTTP.Middlewares[stripMw] = Middleware{
@@ -230,10 +258,34 @@ func serviceKey(app, svc string) string {
 	return sanitize(app) + "-" + sanitize(svc)
 }
 
+func validateRouteInputs(cfg AppRouteConfig) error {
+	if strings.ContainsAny(cfg.PublicHost, "`\r\n") || strings.ContainsAny(cfg.CertResolver, "`\r\n") {
+		return fmt.Errorf("public host contains invalid characters")
+	}
+	if strings.ContainsAny(cfg.AppPathPrefix, "`\r\n") || strings.Contains(cfg.AppPathPrefix, "..") {
+		return fmt.Errorf("app path prefix contains invalid characters")
+	}
+	for _, route := range cfg.Routes {
+		if route.IP != "" && net.ParseIP(route.IP) == nil {
+			return fmt.Errorf("invalid backend IP %q", route.IP)
+		}
+		if route.Port < 0 || route.Port > 65535 {
+			return fmt.Errorf("invalid backend port %d", route.Port)
+		}
+		for _, domain := range route.Domain {
+			if !ValidDomain(domain) {
+				return fmt.Errorf("invalid route domain %q", domain)
+			}
+		}
+	}
+	return nil
+}
+
 func hostRule(domains []string) string {
-	sort.Strings(domains)
-	parts := make([]string, len(domains))
-	for i, d := range domains {
+	ordered := append([]string(nil), domains...)
+	sort.Strings(ordered)
+	parts := make([]string, len(ordered))
+	for i, d := range ordered {
 		parts[i] = "Host(`" + d + "`)"
 	}
 	return strings.Join(parts, " || ")

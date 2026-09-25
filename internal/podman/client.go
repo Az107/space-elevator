@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/docker/docker/client"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 )
 
 type Client struct {
@@ -33,7 +33,10 @@ func (c *Client) Ping(ctx context.Context) (types.Ping, error) {
 }
 
 func (c *Client) Close() error {
-		return c.cli.Close()
+	if c == nil || c.cli == nil {
+		return nil
+	}
+	return c.cli.Close()
 }
 
 func (c *Client) Raw() *client.Client {

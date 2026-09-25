@@ -9,6 +9,7 @@
   <h1>Sign in</h1>
   <p class="auth-sub">space-elevator dashboard</p>
   <form method="post" action="/login" class="form">
+    <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
     <label>Username
       <input type="text" name="username" value="{{ .Username }}"
              autocomplete="username" required autofocus>

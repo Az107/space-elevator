@@ -1,0 +1,72 @@
+<section class="deployment-page" data-operation="{{ .Operation.ID }}" data-seq="{{ .LatestSeq }}">
+  <header class="page-head deployment-head">
+    <div>
+      <a class="back-link" href="/apps">← Apps</a>
+      <h1>{{ .OperationTypeLabel }}</h1>
+      <p class="page-sub">{{ .App.Name }} · {{ .Operation.CreatedAt.Format "2006-01-02 15:04" }}</p>
+    </div>
+    <div class="deployment-head-actions">
+      {{ if .CanEditBuild }}
+      <a class="btn ghost" id="deployment-edit-build" href="/apps/{{ .App.Name }}/build-settings"{{ if not .CanEditBuild }} hidden{{ end }}>Change build settings</a>
+      {{ end }}
+      <form method="post" action="/deployments/{{ .Operation.ID }}/retry" id="deployment-retry"{{ if not .CanRetry }} hidden{{ end }}>
+        <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
+        <button type="submit">{{ template "i-redeploy" }}<span class="btn-label">Retry deployment</span></button>
+      </form>
+      <a class="btn ghost" href="/apps/{{ .App.Name }}">View app</a>
+    </div>
+  </header>
+
+  <section class="deployment-status status-{{ .Operation.Status }}" aria-live="polite">
+    <div class="deployment-status-main">
+      <span class="deployment-status-icon" aria-hidden="true">
+        {{ if .Active }}<span class="spinner"></span>{{ else if eq .Operation.Status "completed" }}✓{{ else if eq .Operation.Status "rolled_back" }}↩{{ else if eq .Operation.Status "failed" }}!{{ else if eq .Operation.Status "rollback_failed" }}!{{ else }}·{{ end }}
+      </span>
+      <div>
+        <strong id="deployment-state">{{ .StatusLabel }}</strong>
+        <p id="deployment-description">{{ .Description }}</p>
+      </div>
+    </div>
+    <div class="deployment-progress" id="deployment-progress" aria-label="Deployment progress">
+      <span style="width: {{ .Progress }}%"></span>
+    </div>
+  </section>
+
+  <div class="deployment-grid">
+    <section class="panel deployment-plan-panel">
+      <div class="panel-heading">
+        <h2>Deployment plan</h2>
+        <span class="panel-note">{{ .StepCount }} steps</span>
+      </div>
+      <ol class="deployment-steps" id="deployment-steps">
+        {{ range .Steps }}
+        <li class="deployment-step step-{{ .Status }}" data-step="{{ .Key }}" data-status="{{ .Status }}">
+          <span class="step-marker" aria-hidden="true">
+            {{ if eq .Status "succeeded" }}✓{{ else if eq .Status "failed" }}!{{ else if eq .Status "rolled_back" }}↩{{ else if eq .Status "running" }}<span class="spinner"></span>{{ else if eq .Status "skipped" }}–{{ else }}·{{ end }}
+          </span>
+          <div class="step-copy">
+            <strong>{{ .Label }}</strong>
+            {{ if .Error }}<span class="step-error">{{ .Error }}</span>{{ end }}
+          </div>
+          <span class="step-state">{{ if eq .Status "running" }}Working{{ else if eq .Status "succeeded" }}Done{{ else if eq .Status "failed" }}Failed{{ else if eq .Status "skipped" }}Skipped{{ else if eq .Status "rolled_back" }}Restored{{ else }}Waiting{{ end }}</span>
+        </li>
+        {{ end }}
+      </ol>
+    </section>
+
+    <section class="panel deployment-log-panel">
+      <div class="panel-heading">
+        <h2>Build output</h2>
+        <span class="panel-note">{{ len .Logs }} lines</span>
+      </div>
+      <pre id="deployment-log" tabindex="0" aria-label="Deployment output">{{ range .Logs }}[{{ .Step }}] {{ .Message }}
+{{ end }}</pre>
+    </section>
+  </div>
+
+  <footer class="deployment-footer">
+    <a href="/apps">Back to apps</a>
+    <span class="mono">{{ .Operation.ID }}</span>
+  </footer>
+</section>
+<script src="{{ assetURL "/static/js/deployments.js" }}"></script>

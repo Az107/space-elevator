@@ -17,17 +17,22 @@ import (
 
 var appsGcCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "Garbage-collect orphaned drop source dirs, tarballs, and unused images",
-	Long: `Sweep three things:
+	Short: "Garbage-collect orphaned drop source dirs, release trees, tarballs, and unused images",
+	Long: `Sweep four things under the apps root and the local image store:
 
-  - Drop dirs and tarballs under appsRoot that no longer have a matching
-    row in the SQLite apps table (typical after a crash or partial remove).
-  - Drop dirs whose DB row exists but the directory is missing (cleanup of
-    the empty stubs a partial upload leaves behind).
-  - Local Podman images under localhost/se/* that aren't referenced by
-    any current app's compose spec.
+  - Drop dirs and tarballs with no matching row in the SQLite apps table
+    (typical after a crash or partial remove).
+  - Release trees under <apps_root>/releases whose app no longer exists,
+    plus per-release checkouts older than the newest 3 for a live app.
+    The current release is always retained regardless of age.
+  - Local Podman images under localhost/se/* that are not referenced by
+    any live app's compose spec or retained release image map.
+  - Apps whose on-disk source directory has gone missing. These are
+    reported, never deleted: the row still holds domains, secrets, and
+    storage mappings that only the operator should discard.
 
-Safe to run any time; idempotent.`,
+The three most recent releases per app are retained so rollback stays
+possible. Safe to run any time; idempotent.`,
 	RunE: runAppsGc,
 }
 
@@ -43,7 +48,7 @@ func init() {
 	f := appsGcCmd.Flags()
 	f.BoolVar(&gcRemoveImages, "images", true, "remove unused localhost/se/* images")
 	f.BoolVar(&gcRemoveOrphans, "orphans", true, "remove drop dirs/tarballs with no matching app row")
-	f.BoolVar(&gcRemoveStubs, "stubs", true, "remove empty drop dirs whose app exists but source is missing")
+	f.BoolVar(&gcRemoveStubs, "stubs", true, "report apps whose source directory is missing")
 	f.DurationVar(&gcOrphanOlderThan, "older-than", 1*time.Hour, "only remove orphan dirs/tarballs older than this (0 = any age)")
 }
 
@@ -66,16 +71,26 @@ func runAppsGc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	liveSources := map[string]bool{}
+	liveAppIDs := map[string]bool{}
+	liveReleaseDirs := map[string]bool{}
+	releaseInventoryKnown := map[string]bool{}
 	for _, a := range apps {
+		liveAppIDs[a.ID] = true
 		dir, derr := store.AppSourceDir(cfg.AppsRoot, a)
-		if derr != nil {
-			continue
+		if derr == nil {
+			liveSources[dir] = true
 		}
-		liveSources[dir] = true
-		// Spec-driven image refs: every service in the compose file
-		// either builds from a tag we know, or pulls an image. We can
-		// only safely clean what we built.
-		// (Image cleanup below handles the localhost/se/* tagspace.)
+		if current, currentErr := st.GetCurrentRelease(cmd.Context(), a.ID); currentErr == nil && current.SourcePath != "" {
+			liveSources[current.SourcePath] = true
+		}
+		if releases, releaseErr := st.ListReleases(cmd.Context(), a.ID); releaseErr == nil {
+			releaseInventoryKnown[a.ID] = true
+			for i, release := range releases {
+				if i < 3 || release.ID == a.CurrentReleaseID {
+					liveReleaseDirs[filepath.Join(cfg.AppsRoot, "releases", a.ID, release.ID)] = true
+				}
+			}
+		}
 	}
 
 	// -- orphans --
@@ -111,13 +126,76 @@ func runAppsGc(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// -- orphaned release trees --
+	removedReleases := 0
+	if gcRemoveOrphans {
+		releaseRoot := filepath.Join(cfg.AppsRoot, "releases")
+		entries, rerr := os.ReadDir(releaseRoot)
+		if rerr != nil && !os.IsNotExist(rerr) {
+			return rerr
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			appID := entry.Name()
+			path := filepath.Join(releaseRoot, appID)
+			if !liveAppIDs[appID] {
+				if !isOlderThan(path, gcOrphanOlderThan) {
+					continue
+				}
+				if err := os.RemoveAll(path); err == nil {
+					fmt.Printf("removed orphan release tree: %s\n", path)
+					removedReleases++
+				}
+				continue
+			}
+			if !releaseInventoryKnown[appID] {
+				continue
+			}
+			releaseEntries, readErr := os.ReadDir(path)
+			if readErr != nil {
+				continue
+			}
+			for _, releaseEntry := range releaseEntries {
+				if !releaseEntry.IsDir() {
+					continue
+				}
+				releasePath := filepath.Join(path, releaseEntry.Name())
+				if liveReleaseDirs[releasePath] || !isOlderThan(releasePath, gcOrphanOlderThan) {
+					continue
+				}
+				if err := os.RemoveAll(releasePath); err == nil {
+					fmt.Printf("removed old release tree: %s\n", releasePath)
+					removedReleases++
+				}
+			}
+		}
+	}
+
 	// -- stubs --
+	// A "stub" is an app row whose on-disk source directory is gone. There
+	// is nothing safe to delete here: removing the row would drop the app's
+	// domains, secrets, and storage mappings, and re-uploading is an
+	// explicit operator action. So report them instead, which is what
+	// actually helps: each line names an app that will fail to redeploy.
+	stubbed := 0
 	if gcRemoveStubs {
 		for _, a := range apps {
-			ok, _ := store.SourceDirExists(cfg.AppsRoot, a)
-			if !ok {
-				fmt.Printf("kept stub row: %s (source dir missing, leaving DB row for manual fix)\n", a.Name)
+			ok, err := store.SourceDirExists(cfg.AppsRoot, a)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warn: %s: %v\n", a.Name, err)
+				continue
 			}
+			if ok {
+				continue
+			}
+			dir, pathErr := store.AppSourceDir(cfg.AppsRoot, a)
+			if pathErr != nil {
+				continue
+			}
+			fmt.Printf("missing source for %s (%s); re-upload or redeploy to repair\n", a.Name, dir)
+			stubbed++
 		}
 	}
 
@@ -127,17 +205,31 @@ func runAppsGc(cmd *cobra.Command, _ []string) error {
 		// Build the set of live tags from compose specs.
 		live := map[string]bool{}
 		for _, a := range apps {
-			spec, err := composerParseOrSkip(a.ComposeYAML)
-			if err != nil || spec == nil {
-				continue
-			}
-			for svcName, svc := range spec.Services {
-				if svc.Image != "" {
-					live[svc.Image] = true
+			spec, err := composer.Parse([]byte(a.ComposeYAML))
+			if err == nil && spec != nil {
+				for svcName, svc := range spec.Services {
+					if svc.Image != "" {
+						live[svc.Image] = true
+					}
+					if svc.Build != nil {
+						// Mirror the runtime's stable slug-based tag convention.
+						live["localhost/se/"+composer.SanitizeForImage(a.Slug)+"/"+composer.SanitizeForImage(svcName)+":latest"] = true
+					}
 				}
-				if svc.Build != nil {
-					// Mirror the runtime's tag convention.
-					live["localhost/se/"+composer.SanitizeForImage(a.Name)+"/"+composer.SanitizeForImage(svcName)+":latest"] = true
+			}
+			// Release images are immutable and are not necessarily present in
+			// the app's current compose file. Retain the current release's
+			// exact image map, and all known release maps while auditing.
+			if releases, releaseErr := st.ListReleases(cmd.Context(), a.ID); releaseErr == nil {
+				for i, release := range releases {
+					if i >= 3 && release.ID != a.CurrentReleaseID {
+						continue
+					}
+					for _, image := range release.ImageMap {
+						if image != "" {
+							live[image] = true
+						}
+					}
 				}
 			}
 		}
@@ -161,7 +253,10 @@ func runAppsGc(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	fmt.Printf("\nDone: dirs=%d tarballs=%d images=%d\n", removedDirs, removedTars, removedImgs)
+	fmt.Printf("\nDone: dirs=%d tarballs=%d releases=%d images=%d\n", removedDirs, removedTars, removedReleases, removedImgs)
+	if stubbed > 0 {
+		fmt.Printf("warning: %d app(s) have a missing source directory; see above\n", stubbed)
+	}
 	return nil
 }
 
@@ -171,15 +266,9 @@ func isOlderThan(path string, d time.Duration) bool {
 	if d <= 0 {
 		return true
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return false
 	}
 	return time.Since(info.ModTime()) > d
-}
-
-// composerParseOrSkip wraps composer.Parse so gc can skip apps with
-// corrupt stored compose instead of failing the whole sweep.
-func composerParseOrSkip(raw string) (*composer.Spec, error) {
-	return composer.Parse([]byte(raw))
 }

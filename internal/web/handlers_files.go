@@ -100,7 +100,7 @@ func (s *Server) handleAppFileView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path outside source directory", http.StatusForbidden)
 		return
 	}
-	info, err := os.Stat(abs)
+	info, err := os.Lstat(abs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -109,7 +109,7 @@ func (s *Server) handleAppFileView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "is a directory", http.StatusBadRequest)
 		return
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		http.Error(w, "not a regular file", http.StatusForbidden)
 		return
 	}

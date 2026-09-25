@@ -28,6 +28,15 @@ type AppOptions struct {
 //     configured, in which case any existing file is removed
 //   - (false, err) on failure
 func ApplyAppRoute(ctx context.Context, opts AppOptions) (bool, error) {
+	if opts.Writer == nil {
+		return false, fmt.Errorf("Traefik writer is not configured")
+	}
+	if opts.Client == nil {
+		return false, fmt.Errorf("Podman client is not configured")
+	}
+	if opts.Spec == nil {
+		return false, fmt.Errorf("app compose spec is not configured")
+	}
 	routes, err := ResolveForApp(ctx, opts.Client, opts.AppName, opts.Spec, opts.Domains, opts.RootlessGateway)
 	if err != nil {
 		return false, fmt.Errorf("resolve: %w", err)

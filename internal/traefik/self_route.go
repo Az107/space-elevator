@@ -2,6 +2,7 @@ package traefik
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -62,6 +63,19 @@ func RenderSelf(c SelfRouteConfig) ([]byte, error) {
 	}
 	if c.Host == "" && c.PathPrefix == "" {
 		return nil, fmt.Errorf("self-route: at least one of Host or PathPrefix is required")
+	}
+	if strings.ContainsAny(c.Host, "`\r\n\t /:") || strings.Contains(c.Host, "..") {
+		return nil, fmt.Errorf("self-route: invalid host")
+	}
+	if strings.ContainsAny(c.PathPrefix, "`\r\n") || strings.Contains(c.PathPrefix, "..") {
+		return nil, fmt.Errorf("self-route: invalid path prefix")
+	}
+	backend, err := url.Parse(c.BackendURL)
+	if err != nil || backend.Host == "" || backend.User != nil || backend.RawQuery != "" || backend.Fragment != "" || (backend.Scheme != "http" && backend.Scheme != "https") {
+		return nil, fmt.Errorf("self-route: backend must be an http(s) URL")
+	}
+	if strings.ContainsAny(c.CertResolver, "`\r\n") {
+		return nil, fmt.Errorf("self-route: invalid certificate resolver")
 	}
 
 	prefix := normalizePrefix(c.PathPrefix)

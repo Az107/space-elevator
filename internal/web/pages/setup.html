@@ -9,6 +9,7 @@
   <h1>Welcome</h1>
   <p class="auth-sub">Set the admin password for this dashboard. This is the only account.</p>
   <form method="post" action="/setup" class="form">
+    <input type="hidden" name="csrf" value="{{ .CSRFToken }}">
     <label>Password
       <input type="password" name="password" required autofocus minlength="8">
     </label>

@@ -113,14 +113,21 @@ space-elevator apps deploy <repo> --kind function --language python \
   --runtime 3.12 --entrypoint handler.py:handler   # serverless function
 space-elevator apps upload site.tar.gz              # quick deploy an archive
 space-elevator apps upload fn.zip --kind function --language node --entrypoint index.js:handler
-space-elevator apps list | logs | start | stop | restart | rename | redeploy | remove
+space-elevator apps update myapp --ref v2.4         # update Git source, preserving volumes
+space-elevator apps update myapp --archive ./release-v2.tar.gz
+space-elevator apps list | logs | start | stop | restart | rename | redeploy | update | remove
 space-elevator user reset-password                 # lockout recovery
 space-elevator serve                               # web dashboard (the service runs this)
 ```
 
 The dashboard's **New app** wizard covers all of this: pick a kind
 (web / function / container) and a source (git / upload). The apps page
-also keeps a one-drop quick-deploy zone for archives.
+also keeps a one-drop quick-deploy zone for archives. Open an app to use
+**Update**: Git apps can move to another branch, tag, or commit, and archive
+apps can replace their source archive. Updates preserve the app identity and
+stable named volumes/managed bind data, create a backup, and briefly restart
+the app during cutover. Keep logical volume names unchanged; data written only
+to a container root filesystem is not persistent.
 
 ### Functions
 

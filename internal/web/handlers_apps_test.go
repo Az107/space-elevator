@@ -102,6 +102,24 @@ func TestHandleAppDetailFailedDeployRendersError(t *testing.T) {
 	}
 }
 
+func TestHandleAppUpdateForm(t *testing.T) {
+	s := newDetailTestServer(t)
+	mustApp(t, s, &store.App{ID: "update-app", Name: "docs-site", SourceType: "git", GitRef: "main", Status: "running", Env: map[string]string{}})
+	r := chi.NewRouter()
+	r.Get("/apps/{name}/update", s.handleAppUpdateForm)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/apps/docs-site/update", nil))
+	if w.Code != 200 {
+		t.Fatalf("status %d, body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{`action="/apps/docs-site/update"`, `name="ref"`, "persistent data"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("update page missing %q", want)
+		}
+	}
+}
+
 // The deploy-status feed returns the row status plus build-log lines
 // after the client's last seen seq.
 func TestHandleDeployStatus(t *testing.T) {

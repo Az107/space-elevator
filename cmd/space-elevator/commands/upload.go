@@ -131,7 +131,7 @@ func runUpload(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if cfg.PublicHost != "" && cfg.AppPathPrefix != "" {
-		fmt.Printf("Traefik config written; reachable at: %s\n", publicAppURL(cfg.PublicHost, cfg.AppPathPrefix, app.Name))
+		fmt.Printf("Traefik config written; reachable at: %s\n", publicAppURL(cfg.PublicHost, cfg.AppPathPrefix, app.Slug))
 	}
 	fmt.Printf("OK: app %s is running.\n", app.Name)
 	return nil

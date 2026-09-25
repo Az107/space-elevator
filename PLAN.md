@@ -363,6 +363,8 @@ a valid YAML. E2E test against the live rootful Traefik pending — see
 - `space-elevator init` first-run wizard — pending (the web /setup
   page covers first-run on the dashboard).
 - `space-elevator update` for self-update — pending.
+- App updates from Git refs and archive replacements with stable persistent
+  volumes, managed bind data, backups, and brief-downtime cutover — in progress.
 
 ## Estimated effort (revised)
 

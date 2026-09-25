@@ -87,6 +87,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 
 	// Directories / state DB.
 	add(writableCheck("state dir", cfg.StateDir))
+	add(writableCheck("backup dir", cfg.BackupDir))
 	add(writableCheck("apps root", cfg.AppsRoot))
 	if st, err := store.Open(filepath.Join(cfg.StateDir, "space-elevator.db")); err != nil {
 		add(check{"state db", "fail", err.Error()})

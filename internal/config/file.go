@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ type fileConfig struct {
 	BindAddr                 *string `yaml:"bind_addr"`
 	SocketPath               *string `yaml:"socket_path"`
 	DataDir                  *string `yaml:"data_dir"`
+	BackupDir                *string `yaml:"backup_dir"`
 	StateDir                 *string `yaml:"state_dir"`
 	TraefikDir               *string `yaml:"traefik_dir"`
 	PublicHost               *string `yaml:"public_host"`
@@ -49,6 +51,9 @@ func applyYAML(c *Config, data []byte) error {
 	}
 	if f.DataDir != nil {
 		c.DataDir = *f.DataDir
+	}
+	if f.BackupDir != nil {
+		c.BackupDir = *f.BackupDir
 	}
 	if f.StateDir != nil {
 		c.StateDir = *f.StateDir
@@ -84,10 +89,18 @@ func applyYAML(c *Config, data []byte) error {
 		c.RootlessGateway = *f.RootlessGateway
 	}
 	if f.MemoryLimit != nil {
-		c.DefaultMemoryBytes = parseSizeBytes(*f.MemoryLimit)
+		size, err := parseSizeBytes(*f.MemoryLimit)
+		if err != nil {
+			return fmt.Errorf("memory_limit: %w", err)
+		}
+		c.DefaultMemoryBytes = size
 	}
 	if f.PidsLimit != nil {
-		c.DefaultPidsLimit = *f.PidsLimit
+		n, err := parseInt64(strconv.FormatInt(*f.PidsLimit, 10))
+		if err != nil {
+			return fmt.Errorf("pids_limit: %w", err)
+		}
+		c.DefaultPidsLimit = n
 	}
 	if f.InsecureCookies != nil {
 		c.InsecureCookies = *f.InsecureCookies
@@ -110,14 +123,43 @@ func (c *Config) Save(path string) error {
 	if path == "" {
 		path = ConfigPath()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to overwrite symlinked config %q", path)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	var b bytes.Buffer
 	if err := c.SaveTo(&b); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".space-elevator-config-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := tmp.Write(b.Bytes()); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return err
 	}
 	// Save may be replacing a pre-existing config created with the old
@@ -133,17 +175,17 @@ func (c *Config) SaveTo(w io.Writer) error {
 }
 
 type tmplData struct {
-	BindAddr, SocketPath, DataDir, StateDir string
-	TraefikDir, PublicHost, PublicPath      string
-	DashboardURL, CertResolver, QuadletDir  string
-	AppsRoot, DefaultNetwork, AppPathPrefix string
-	RootlessGateway                         string
-	MemoryLimit                             string
-	PidsLimit                               int64
-	InsecureCookies                         bool
-	TokenManagerURL                         string
-	TokenManagerClientID                    string
-	TokenManagerClientSecret                string
+	BindAddr, SocketPath, DataDir, BackupDir, StateDir string
+	TraefikDir, PublicHost, PublicPath                 string
+	DashboardURL, CertResolver, QuadletDir             string
+	AppsRoot, DefaultNetwork, AppPathPrefix            string
+	RootlessGateway                                    string
+	MemoryLimit                                        string
+	PidsLimit                                          int64
+	InsecureCookies                                    bool
+	TokenManagerURL                                    string
+	TokenManagerClientID                               string
+	TokenManagerClientSecret                           string
 }
 
 func templateData(c *Config) tmplData {
@@ -151,6 +193,7 @@ func templateData(c *Config) tmplData {
 		BindAddr:                 c.BindAddr,
 		SocketPath:               c.SocketPath,
 		DataDir:                  c.DataDir,
+		BackupDir:                c.BackupDir,
 		StateDir:                 c.StateDir,
 		TraefikDir:               c.TraefikDir,
 		PublicHost:               c.PublicHost,
@@ -197,6 +240,10 @@ socket_path: {{q .SocketPath}}
 # Long-lived data (uploads, git checkouts).
 # env: SPACE_ELEVATOR_DATA_DIR
 data_dir: {{q .DataDir}}
+
+# App update backups. Keep this on storage with enough room for database volumes.
+# env: SPACE_ELEVATOR_BACKUP_DIR
+backup_dir: {{q .BackupDir}}
 
 # SQLite DB + CSRF key (created 0700).
 # env: SPACE_ELEVATOR_STATE_DIR

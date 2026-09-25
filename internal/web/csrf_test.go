@@ -36,6 +36,38 @@ func TestCSRFKeyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAnonymousCSRFBindsFormToCookie(t *testing.T) {
+	c, err := loadCSRFKey(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{CSRF: c, Cfg: &config.Config{InsecureCookies: true}}
+	first := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/login", nil)
+	token := s.ensureAnonymousCSRF(first, req)
+	var cookie *http.Cookie
+	for _, candidate := range first.Result().Cookies() {
+		if candidate.Name == anonymousCSRFCookie {
+			cookie = candidate
+		}
+	}
+	if cookie == nil || token == "" {
+		t.Fatal("anonymous CSRF cookie/token was not issued")
+	}
+	post := httptest.NewRequest("POST", "/login", strings.NewReader("csrf="+token))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post.AddCookie(cookie)
+	if !s.verifyAnonymousCSRF(httptest.NewRecorder(), post) {
+		t.Fatal("valid anonymous CSRF token was rejected")
+	}
+	bad := httptest.NewRequest("POST", "/login", strings.NewReader("csrf="+token+"x"))
+	bad.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	bad.AddCookie(cookie)
+	if s.verifyAnonymousCSRF(httptest.NewRecorder(), bad) {
+		t.Fatal("tampered anonymous CSRF token was accepted")
+	}
+}
+
 func TestCSRFProtect(t *testing.T) {
 	c, err := loadCSRFKey(t.TempDir())
 	if err != nil {

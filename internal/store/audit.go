@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -28,6 +29,12 @@ type AuditEvent struct {
 // non-fatal (log to stderr instead), so the request path is never
 // blocked by the audit table.
 func (s *Store) RecordAudit(ctx context.Context, e *AuditEvent) error {
+	if e == nil {
+		return errors.New("nil audit event")
+	}
+	e.Detail = boundedError(e.Detail)
+	e.UserAgent = boundedError(e.UserAgent)
+	e.TargetName = boundedError(e.TargetName)
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
@@ -59,6 +66,9 @@ type AuditFilter struct {
 
 // ListAudit returns events newest-first.
 func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]*AuditEvent, error) {
+	if f.Limit <= 0 || f.Limit > 1000 {
+		f.Limit = 200
+	}
 	q := `SELECT id, at, actor_type, actor_id, actor_label, action,
 	             target_type, target_id, target_name, outcome, ip, user_agent, detail
 	      FROM audit_events WHERE 1=1`

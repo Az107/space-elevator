@@ -19,7 +19,7 @@ func TestSafeJoin(t *testing.T) {
 	}{
 		{"index.html", false, "/srv/drops/abc/index.html"},
 		{"./a/b.txt", false, "/srv/drops/abc/a/b.txt"},
-		{"/etc/passwd", false, "/srv/drops/abc/etc/passwd"}, // leading slash stripped
+		{"/etc/passwd", true, ""},
 		{"../../etc/passwd", true, ""},
 		{"a/../../escape", true, ""},
 		{"..", true, ""},
@@ -101,21 +101,24 @@ func TestDetectKindDockerfile(t *testing.T) {
 func TestExtractEntryCap(t *testing.T) {
 	c := &extractCounters{}
 	for i := 0; i < extractMaxEntries; i++ {
-		if err := c.addEntry(0); err != nil {
+		if err := c.addEntry(); err != nil {
 			t.Fatalf("entry %d should be allowed", i+1)
 		}
 	}
-	if err := c.addEntry(0); err == nil {
+	if err := c.addEntry(); err == nil {
 		t.Error("entry cap should trigger")
 	}
 }
 
 func TestExtractSizeCap(t *testing.T) {
 	c := &extractCounters{}
-	if err := c.addEntry(extractMaxTotalBytes); err != nil {
+	if err := c.addEntry(); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.addEntry(1); err == nil {
+	if err := c.addBytes(extractMaxTotalBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.addBytes(1); err == nil {
 		t.Error("total size cap should trigger")
 	}
 }

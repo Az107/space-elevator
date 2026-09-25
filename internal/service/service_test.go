@@ -36,6 +36,16 @@ func TestRenderOmitsEnvFileWhenUnset(t *testing.T) {
 	}
 }
 
+func TestRenderUsesConfigBindWhenRequested(t *testing.T) {
+	body, err := Render(Options{BinPath: "/bin/se", Addr: "0.0.0.0:9999", UseConfig: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "ExecStart=/bin/se serve\n") || strings.Contains(body, "--addr") {
+		t.Fatalf("config-authoritative unit = %q", body)
+	}
+}
+
 func TestRenderRequiresBinary(t *testing.T) {
 	if _, err := Render(Options{Addr: "127.0.0.1:8080"}); err == nil {
 		t.Error("expected error without a binary path")

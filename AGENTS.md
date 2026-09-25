@@ -48,8 +48,11 @@ lives in SQLite; runtime state lives in Podman, addressable by the
 - **Apps root**: `~/apps` (drops + checkouts)
 - **Traefik dynamic dir**: `~/Infra/traefik/rootful-dynamic/*.yml`
 - **Podman socket**: auto-detected; override with `PODMAN_SOCKET=…`
-- **Service**: `space-elevator.service` (systemd user unit),
-  `ExecStart=%h/.local/bin/space-elevator serve --addr 0.0.0.0:8080`
+- **Service**: `space-elevator.service` (systemd user unit), installed by
+  `space-elevator service install` / `setup`. The generated unit runs
+  `ExecStart=<bin> serve` **without** an `--addr` override, so the
+  config file / `SPACE_ELEVATOR_*` env is authoritative after setup and
+  later `bind_addr` edits take effect on the next `service restart`.
 - `serve` also writes the dashboard's own Traefik file, kicks off
   background route reconciliation, and runs hourly GC + audit pruning.
 
