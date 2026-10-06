@@ -204,6 +204,34 @@ func TestTokenManagerEnvPrecedence(t *testing.T) {
 	}
 }
 
+func TestUpdateRepoDefaultAndEnv(t *testing.T) {
+	t.Setenv("SPACE_ELEVATOR_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
+	if got := MustLoad("").UpdateRepo; got == "" {
+		t.Fatal("update_repo default is empty; the updater would be disabled")
+	}
+	t.Setenv("SPACE_ELEVATOR_UPDATE_REPO", "https://github.com/other/repo")
+	if got := MustLoad("").UpdateRepo; got != "https://github.com/other/repo" {
+		t.Fatalf("UpdateRepo env override = %q", got)
+	}
+}
+
+func TestUpdateRepoIsOnlyAWarning(t *testing.T) {
+	cfg := BuiltinDefaults()
+	cfg.UpdateRepo = "not-a-repo"
+	if errs := cfg.Errors(); len(errs) != 0 {
+		t.Fatalf("a bad update_repo must not be error-level: %v", errs)
+	}
+	found := false
+	for _, i := range cfg.Validate() {
+		if i.Level == "warning" && strings.Contains(i.Message, "update_repo") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected an update_repo warning")
+	}
+}
+
 func TestDetectLegacy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

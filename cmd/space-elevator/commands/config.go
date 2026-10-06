@@ -126,6 +126,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 		{"memory_limit", config.FormatSizeBytes(cfg.DefaultMemoryBytes)},
 		{"pids_limit", fmt.Sprintf("%d", cfg.DefaultPidsLimit)},
 		{"insecure_cookies", fmt.Sprintf("%t", cfg.InsecureCookies)},
+		{"update_repo", cfg.UpdateRepo},
 		{"token_manager_url", cfg.TokenManagerURL},
 		{"token_manager_client_id", cfg.TokenManagerClientID},
 		{"token_manager_client_secret", secretState(cfg.TokenManagerClientSecret)},

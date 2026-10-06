@@ -239,6 +239,30 @@ func TestListDeployLogsLargeFeedDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestHasAnyActiveOperation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := t.Context()
+	mustUpdateApp(t, s, "busy-app")
+	mustUpdateApp(t, s, "idle-app")
+
+	if busy, err := s.HasAnyActiveOperation(ctx); err != nil || busy {
+		t.Fatalf("HasAnyActiveOperation before any claim = (%v,%v), want (false,nil)", busy, err)
+	}
+	op, err := s.ClaimAppOperation(ctx, "busy-app", "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy, err := s.HasAnyActiveOperation(ctx); err != nil || !busy {
+		t.Fatalf("HasAnyActiveOperation with active op = (%v,%v), want (true,nil)", busy, err)
+	}
+	if err := s.FinishOperation(ctx, op.ID, OperationStatusCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	if busy, err := s.HasAnyActiveOperation(ctx); err != nil || busy {
+		t.Fatalf("HasAnyActiveOperation after finish = (%v,%v), want (false,nil)", busy, err)
+	}
+}
+
 func TestInterruptActiveOperations(t *testing.T) {
 	s := openTestStore(t)
 	ctx := t.Context()

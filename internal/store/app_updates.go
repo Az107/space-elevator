@@ -827,6 +827,16 @@ func (s *Store) HasActiveOperation(ctx context.Context, appID string) (bool, err
 	return err == nil, err
 }
 
+// HasAnyActiveOperation reports whether any app currently owns an operation.
+// Restarting the service would interrupt it, so `space-elevator update`
+// refuses while this is true.
+func (s *Store) HasAnyActiveOperation(ctx context.Context) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM app_operations
+		WHERE status IN ('preflighting', 'building', 'backing_up', 'cutting_over', 'verifying', 'rolling_back')`).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) GetOperation(ctx context.Context, id string) (*AppOperation, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+appOperationColumns+` FROM app_operations WHERE id=?`, id)
 	op, err := scanAppOperation(row)

@@ -62,6 +62,8 @@ const (
 	ActionDomainRemove = "app.domain.remove"
 
 	ActionOriginReject = "security.origin_reject"
+
+	ActionSelfUpdate = "system.self_update"
 )
 
 // Actor identifies who performed an action. ID is an opaque stable

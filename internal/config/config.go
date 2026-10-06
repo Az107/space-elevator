@@ -60,6 +60,11 @@ type Config struct {
 	// InsecureCookies disables the Secure flag on the session cookie. Only for
 	// plain-HTTP local testing.
 	InsecureCookies bool
+	// UpdateRepo is the GitHub repository `space-elevator update` checks for
+	// new releases, e.g. https://github.com/owner/repo. Only GitHub releases
+	// are implemented. Empty disables the updater. Optional: a missing value
+	// must never block startup or `config validate`.
+	UpdateRepo string
 	// TokenManagerURL, TokenManagerClientID, and TokenManagerClientSecret
 	// configure the external service that validates REST API tokens. They
 	// must either all be set or all be empty; empty disables API token
@@ -96,6 +101,7 @@ func BuiltinDefaults() *Config {
 		DefaultMemoryBytes:       512 << 20,
 		DefaultPidsLimit:         256,
 		InsecureCookies:          false,
+		UpdateRepo:               "https://github.com/Az107/space-elevator",
 		TokenManagerURL:          "",
 		TokenManagerClientID:     "",
 		TokenManagerClientSecret: "",
@@ -294,6 +300,12 @@ func (c *Config) Validate() []Issue {
 	if c.TokenManagerPartiallyConfigured() {
 		out = append(out, Issue{"error", "token_manager_url, token_manager_client_id, and token_manager_client_secret must be set together"})
 	}
+	// update_repo is optional; a bad value only disables `space-elevator
+	// update`, so it is a warning, never an error (a required key would block
+	// startup on hosts that never use the updater).
+	if c.UpdateRepo != "" && !strings.Contains(c.UpdateRepo, "/") {
+		out = append(out, Issue{"warning", "update_repo should name a repository (https://github.com/owner/repo)"})
+	}
 	return out
 }
 
@@ -444,6 +456,7 @@ func applyEnv(c *Config) error {
 	envStr(&c.DefaultNetwork, "SPACE_ELEVATOR_DEFAULT_NETWORK")
 	envStr(&c.AppPathPrefix, "SPACE_ELEVATOR_APP_PATH_PREFIX")
 	envStr(&c.RootlessGateway, "SPACE_ELEVATOR_ROOTLESS_GATEWAY")
+	envStr(&c.UpdateRepo, "SPACE_ELEVATOR_UPDATE_REPO")
 	if v, ok := os.LookupEnv("SPACE_ELEVATOR_MEMORY_LIMIT"); ok {
 		size, err := parseSizeBytes(v)
 		if err != nil {
@@ -492,6 +505,7 @@ var EnvKeys = []string{
 	"SPACE_ELEVATOR_DEFAULT_NETWORK",
 	"SPACE_ELEVATOR_APP_PATH_PREFIX",
 	"SPACE_ELEVATOR_ROOTLESS_GATEWAY",
+	"SPACE_ELEVATOR_UPDATE_REPO",
 	"SPACE_ELEVATOR_MEMORY_LIMIT",
 	"SPACE_ELEVATOR_PIDS_LIMIT",
 	"SPACE_ELEVATOR_INSECURE_COOKIES",

@@ -81,6 +81,16 @@ runs `serve` **without** an `--addr` flag on purpose: the config file and
 | `pids_limit` | `SPACE_ELEVATOR_PIDS_LIMIT` | `256` | Per-container PID limit; `0` = unlimited. |
 | `insecure_cookies` | `SPACE_ELEVATOR_INSECURE_COOKIES` | `false` | Disables the session cookie `Secure` flag. Plain-HTTP local testing only. |
 
+### Self-update
+
+`space-elevator update` downloads a published release of the binary itself from GitHub, verifies it against the release's `checksums.txt`, installs it atomically and restarts the systemd user service (rolling back if the new binary does not come up).
+
+| Key | Env | Default | Notes |
+|---|---|---|---|
+| `update_repo` | `SPACE_ELEVATOR_UPDATE_REPO` | `https://github.com/Az107/space-elevator` | GitHub repository to check for releases. Only GitHub is implemented; a bad value is a warning, never a startup error. Leave empty to disable the updater. |
+
+Run it as the user that owns the installed service (production runs as `services`). `update --check` reports without changing anything; `update --rollback` restores `<binary>.prev`. A token is not required for a public repository, but a stored `github.com` git credential raises the API rate limit from 60 to 5000 requests/hour.
+
 ### REST API authentication
 
 REST API bearer tokens are owned by the external Token-Manager service, not by space-elevator. Create an app named `space-elevator` in Token-Manager, then configure its one-time client credentials:

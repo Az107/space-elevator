@@ -33,6 +33,7 @@ type fileConfig struct {
 	MemoryLimit              *string `yaml:"memory_limit"`
 	PidsLimit                *int64  `yaml:"pids_limit"`
 	InsecureCookies          *bool   `yaml:"insecure_cookies"`
+	UpdateRepo               *string `yaml:"update_repo"`
 	TokenManagerURL          *string `yaml:"token_manager_url"`
 	TokenManagerClientID     *string `yaml:"token_manager_client_id"`
 	TokenManagerClientSecret *string `yaml:"token_manager_client_secret"`
@@ -104,6 +105,9 @@ func applyYAML(c *Config, data []byte) error {
 	}
 	if f.InsecureCookies != nil {
 		c.InsecureCookies = *f.InsecureCookies
+	}
+	if f.UpdateRepo != nil {
+		c.UpdateRepo = *f.UpdateRepo
 	}
 	if f.TokenManagerURL != nil {
 		c.TokenManagerURL = *f.TokenManagerURL
@@ -183,6 +187,7 @@ type tmplData struct {
 	MemoryLimit                                        string
 	PidsLimit                                          int64
 	InsecureCookies                                    bool
+	UpdateRepo                                         string
 	TokenManagerURL                                    string
 	TokenManagerClientID                               string
 	TokenManagerClientSecret                           string
@@ -208,6 +213,7 @@ func templateData(c *Config) tmplData {
 		MemoryLimit:              FormatSizeBytes(c.DefaultMemoryBytes),
 		PidsLimit:                c.DefaultPidsLimit,
 		InsecureCookies:          c.InsecureCookies,
+		UpdateRepo:               c.UpdateRepo,
 		TokenManagerURL:          c.TokenManagerURL,
 		TokenManagerClientID:     c.TokenManagerClientID,
 		TokenManagerClientSecret: c.TokenManagerClientSecret,
@@ -309,6 +315,12 @@ pids_limit: {{.PidsLimit}}
 # testing; leave false in production.
 # env: SPACE_ELEVATOR_INSECURE_COOKIES
 insecure_cookies: {{.InsecureCookies}}
+
+# GitHub repository that "space-elevator update" checks for new releases, e.g.
+# https://github.com/owner/repo. Leave empty to disable the updater; a bad
+# value is only a warning. Only GitHub releases are supported.
+# env: SPACE_ELEVATOR_UPDATE_REPO
+update_repo: {{q .UpdateRepo}}
 
 # External Token-Manager base URL. Leave all three Token-Manager values empty
 # to keep local dashboard access working while the REST API remains disabled.

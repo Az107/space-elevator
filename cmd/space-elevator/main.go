@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/albertoruiz/space-elevator/cmd/space-elevator/commands"
+	"github.com/albertoruiz/space-elevator/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -12,12 +13,8 @@ var rootCmd = &cobra.Command{
 	Use:     "space-elevator",
 	Short:   "Podman-first deployment tool",
 	Long:    "Single binary for deploying and managing containerized apps via Podman + Traefik.",
-	Version: version,
+	Version: version.Version,
 }
-
-// version is overridden at build time with
-// -ldflags "-X main.version=vX.Y.Z"; releases set it from the git tag.
-var version = "dev"
 
 var configFlag string
 
@@ -41,6 +38,7 @@ func main() {
 	rootCmd.AddCommand(commands.SetupCmd)
 	rootCmd.AddCommand(commands.DoctorCmd)
 	rootCmd.AddCommand(commands.ServiceCmd)
+	rootCmd.AddCommand(commands.UpdateCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

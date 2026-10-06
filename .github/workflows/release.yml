@@ -67,16 +67,30 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.next }}
+          COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p dist
+          pkg=github.com/albertoruiz/space-elevator/internal/version
           for arch in amd64 arm64; do
             echo "building linux/${arch} (${VERSION})"
             CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" go build \
               -trimpath \
-              -ldflags "-s -w -X main.version=${VERSION}" \
+              -ldflags "-s -w -X ${pkg}.Version=${VERSION} -X ${pkg}.Commit=${COMMIT} -X ${pkg}.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -o "dist/space-elevator-linux-${arch}" ./cmd/space-elevator
           done
+
+          # Go silently ignores -X for a symbol that does not exist, so a stale
+          # ldflags path produces a "dev" binary with no error and no way for
+          # `space-elevator update` to compare versions. Assert on the native
+          # arch that the stamp matches the tag.
+          got="$(./dist/space-elevator-linux-amd64 --version)"
+          want="space-elevator version ${VERSION}"
+          if [ "$got" != "$want" ]; then
+            echo "version stamp mismatch: got '$got', want '$want'" >&2
+            exit 1
+          fi
+
           (cd dist && sha256sum space-elevator-linux-* > checksums.txt)
           ls -l dist
 
@@ -92,3 +106,20 @@ jobs:
             dist/space-elevator-linux-amd64
             dist/space-elevator-linux-arm64
             dist/checksums.txt
+
+      - name: Verify the release is published
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # action-gh-release creates the release as a draft and unmarks it
+          # after uploading assets. If that finalize ever fails silently the
+          # tag is never created and /releases/latest returns 404, so
+          # `space-elevator update` would never see the release. Fail loudly.
+          state="$(gh release view "${{ steps.version.outputs.next }}" --json isDraft -q .isDraft)"
+          if [ "$state" != "false" ]; then
+            echo "release ${{ steps.version.outputs.next }} is still a draft" >&2
+            exit 1
+          fi
+          echo "release ${{ steps.version.outputs.next }} published"
