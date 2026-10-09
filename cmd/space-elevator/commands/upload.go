@@ -18,8 +18,8 @@ import (
 )
 
 var uploadCmd = &cobra.Command{
-	Use:   "upload <archive.tar.gz|.zip>",
-	Short: "Deploy an uploaded archive as a web app, function, or container",
+	Use:   "upload <archive.tar.gz|.zip|directory>",
+	Short: "Deploy an archive or local folder as a web app, function, or container",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runUpload,
 }

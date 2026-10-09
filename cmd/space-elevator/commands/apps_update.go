@@ -18,7 +18,7 @@ import (
 
 var appsUpdateCmd = &cobra.Command{
 	Use:   "update <app>",
-	Short: "Update an app from a new Git revision or uploaded archive while preserving its data",
+	Short: "Update an app from a new Git revision, archive, or folder while preserving its data",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runAppsUpdate,
 }
@@ -33,8 +33,8 @@ var (
 
 func init() {
 	appsUpdateCmd.Flags().StringVar(&updateRef, "ref", "", "Git branch, tag, or commit to update to (defaults to the stored ref)")
-	appsUpdateCmd.Flags().StringVar(&updateArchive, "archive", "", "new source archive for an archive app")
-	appsUpdateCmd.Flags().StringVar(&updateSourceRef, "source-name", "", "display name for the uploaded archive")
+	appsUpdateCmd.Flags().StringVar(&updateArchive, "archive", "", "new source for an archive/folder app: an archive (.tar.gz/.zip) or a local directory")
+	appsUpdateCmd.Flags().StringVar(&updateSourceRef, "source-name", "", "display name for the new source")
 	appsUpdateCmd.Flags().StringArrayVar(&updateSecrets, "secret", nil, "secret KEY=VALUE to upsert before updating (repeatable)")
 	appsUpdateCmd.Flags().BoolVar(&updateYes, "yes", false, "skip the update confirmation prompt (updates are synchronous in the CLI)")
 }

@@ -20,8 +20,10 @@ import (
 // UpdateRequest replaces an app's source while retaining its stable app ID,
 // slug, domains, environment, secrets, and managed persistent storage.
 type UpdateRequest struct {
-	Name        string
-	Ref         string
+	Name string
+	Ref  string
+	// ArchivePath is the new source: an archive (.tar.gz/.tgz/.zip) or a
+	// local directory.
 	ArchivePath string
 	SourceRef   string
 	Secrets     map[string]string
@@ -72,10 +74,10 @@ func (d *Deployer) update(ctx context.Context, req UpdateRequest, claimed *store
 		return nil, err
 	}
 	if req.ArchivePath != "" && app.SourceType != "drop" {
-		return nil, fmt.Errorf("app %q is a Git app; --archive is only valid for archive apps", name)
+		return nil, fmt.Errorf("app %q is a Git app; --archive is only valid for archive/folder apps", name)
 	}
 	if req.ArchivePath == "" && app.SourceType != "git" {
-		return nil, fmt.Errorf("app %q is an archive app; provide --archive to update it", name)
+		return nil, fmt.Errorf("app %q is an archive/folder app; provide --archive to update it", name)
 	}
 	if req.ArchivePath != "" && strings.TrimSpace(req.Ref) != "" {
 		return nil, fmt.Errorf("--ref and --archive cannot be used together")
@@ -186,8 +188,8 @@ func (d *Deployer) update(ctx context.Context, req UpdateRequest, claimed *store
 		}
 		candidate.ComposeYAML = string(composeBytes)
 	} else {
-		if err := builder.ExtractArchive(req.ArchivePath, releaseDir); err != nil {
-			return failUpdate(nil, "", fmt.Errorf("extract archive: %w", err))
+		if err := builder.MaterializeSource(req.ArchivePath, releaseDir); err != nil {
+			return failUpdate(nil, "", fmt.Errorf("materialize source: %w", err))
 		}
 		if candidate.Kind == store.KindFunction {
 			fb := builder.FunctionBuild{Language: candidate.Runtime, Version: candidate.RuntimeVersion, Entrypoint: candidate.Entrypoint, EnvKeys: envKeys(candidate.Env)}
@@ -197,7 +199,7 @@ func (d *Deployer) update(ctx context.Context, req UpdateRequest, claimed *store
 			candidate.ComposeYAML = fb.Compose()
 		} else {
 			if candidate.Kind == store.KindCustom && !builder.HasDockerfile(releaseDir) {
-				return failUpdate(nil, "", fmt.Errorf("custom update requires a Dockerfile in the archive"))
+				return failUpdate(nil, "", fmt.Errorf("custom update requires a Dockerfile in the source"))
 			}
 			detected, err := builder.DetectKind(releaseDir)
 			if err != nil {

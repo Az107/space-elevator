@@ -13,10 +13,11 @@ import (
 	"github.com/albertoruiz/space-elevator/internal/store"
 )
 
-// UploadRequest describes a deploy from an uploaded archive. The archive
-// is extracted into the app's drop directory; the kind decides how the
-// source is turned into a container: web auto-detects static/dockerfile,
-// custom requires a Dockerfile, function generates an adapter.
+// UploadRequest describes a deploy from an uploaded archive or a local
+// directory. The source is materialized into the app's drop directory; the
+// kind decides how the source is turned into a container: web auto-detects
+// static/dockerfile, custom requires a Dockerfile, function generates an
+// adapter.
 type UploadRequest struct {
 	// Name is the app name; a "drop-<id>" name is generated when empty.
 	Name string
@@ -26,21 +27,24 @@ type UploadRequest struct {
 	RuntimeVersion string
 	Entrypoint     string
 	// SourceRef is the original filename, shown on the app page.
-	SourceRef   string
-	Env         map[string]string
-	Secrets     map[string]string
+	SourceRef string
+	Env       map[string]string
+	Secrets   map[string]string
+	// ArchivePath is the source: an archive (.tar.gz/.tgz/.zip) or, for the
+	// CLI, a local directory.
 	ArchivePath string
 	ScaleToZero bool
 	IdleTimeout int
 }
 
-// CreateUpload extracts an archive, synthesizes the build files for the
-// requested kind, and creates the pending app row. It does not build or
-// run anything: the caller follows with Redeploy (synchronously for the
-// CLI, in a goroutine for web/API so the HTTP request can return).
+// CreateUpload materializes the source (an archive or a local directory),
+// synthesizes the build files for the requested kind, and creates the
+// pending app row. It does not build or run anything: the caller follows
+// with Redeploy (synchronously for the CLI, in a goroutine for web/API so
+// the HTTP request can return).
 func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.App, error) {
 	if req.ArchivePath == "" {
-		return nil, fmt.Errorf("archive required")
+		return nil, fmt.Errorf("source required")
 	}
 	id := uuid.NewString()
 	name := strings.TrimSpace(req.Name)
@@ -69,9 +73,9 @@ func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.
 	}
 	cleanup := func() { _ = os.RemoveAll(destDir) }
 
-	if err := builder.ExtractArchive(req.ArchivePath, destDir); err != nil {
+	if err := builder.MaterializeSource(req.ArchivePath, destDir); err != nil {
 		cleanup()
-		return nil, fmt.Errorf("extract: %w", err)
+		return nil, fmt.Errorf("source: %w", err)
 	}
 
 	dropKind := ""
@@ -92,7 +96,7 @@ func (d *Deployer) CreateUpload(ctx context.Context, req UploadRequest) (*store.
 	case store.KindCustom:
 		if !builder.HasDockerfile(destDir) {
 			cleanup()
-			return nil, fmt.Errorf("custom deploy requires a Dockerfile in the archive")
+			return nil, fmt.Errorf("custom deploy requires a Dockerfile in the source")
 		}
 		dropKind = builder.DropKindDockerfile
 		composeBytes = []byte(builder.SyntheticCompose())

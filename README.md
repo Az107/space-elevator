@@ -112,9 +112,11 @@ space-elevator apps deploy <git-url> --image node:20 \
 space-elevator apps deploy <repo> --kind function --language python \
   --runtime 3.12 --entrypoint handler.py:handler   # serverless function
 space-elevator apps upload site.tar.gz              # quick deploy an archive
+space-elevator apps upload ./dist                   # or deploy a local folder
 space-elevator apps upload fn.zip --kind function --language node --entrypoint index.js:handler
 space-elevator apps update myapp --ref v2.4         # update Git source, preserving volumes
 space-elevator apps update myapp --archive ./release-v2.tar.gz
+space-elevator apps update myapp --archive ./dist   # folder sources work here too
 space-elevator apps list | logs | start | stop | restart | rename | redeploy | update | remove
 space-elevator user reset-password                 # lockout recovery
 space-elevator serve                               # web dashboard (the service runs this)
@@ -128,6 +130,11 @@ apps can replace their source archive. Updates preserve the app identity and
 stable named volumes/managed bind data, create a backup, and briefly restart
 the app during cutover. Keep logical volume names unchanged; data written only
 to a container root filesystem is not persistent.
+
+The CLI's `apps upload` and `apps update --archive` accept a **local
+directory** as well as an archive: the tree is copied verbatim (symlinks
+are rejected, and the same entry/size caps as archive extraction apply).
+Directory sources are CLI-only — the dashboard and API still take archives.
 
 ### Functions
 
